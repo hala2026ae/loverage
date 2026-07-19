@@ -11,10 +11,11 @@ class AdminDashboard extends StatefulWidget {
 }
 
 class _AdminDashboardState extends State<AdminDashboard> {
-  int _currentMenuIndex = 0; // 0 = Verifications, 1 = Reports, 2 = Audit Logs
+  int _currentMenuIndex = 0; // 0 = Verifications, 1 = Images Review, 2 = Reports, 3 = Audit Logs
   bool _isLoading = false;
   
   List<VerificationTask> _verifications = [];
+  List<ModeratedPhoto> _pendingPhotos = [];
   List<ReportTask> _reports = [];
   List<String> _auditLogs = [];
 
@@ -29,14 +30,25 @@ class _AdminDashboardState extends State<AdminDashboard> {
     
     try {
       final supabase = Supabase.instance.client;
-      final response = await supabase
-          .from('verification_submissions')
-          .select('id, user_id, video_storage_path, status, created_at, profiles(public_name, age, profile_photos(public_url, is_primary))')
-          .eq('status', 'pending')
-          .order('created_at', ascending: false);
+      
+      final futures = await Future.wait([
+        supabase
+            .from('verification_submissions')
+            .select('id, user_id, video_storage_path, status, created_at, profiles(public_name, age, profile_photos(public_url, is_primary))')
+            .eq('status', 'pending')
+            .order('created_at', ascending: false),
+        supabase
+            .from('profile_photos')
+            .select('id, user_id, public_url, is_primary, created_at, profiles(public_name, age)')
+            .eq('moderation_status', 'pending')
+            .order('created_at', ascending: false)
+      ]);
 
-      final List<VerificationTask> tasks = [];
-      for (final row in (response as List)) {
+      final verificationsResponse = futures[0];
+      final photosResponse = futures[1];
+
+      final List<VerificationTask> verificationTasks = [];
+      for (final row in (verificationsResponse as List)) {
         final id = row['id']?.toString() ?? '';
         final userId = row['user_id']?.toString() ?? '';
         final videoUrl = row['video_storage_path']?.toString() ?? '';
@@ -75,7 +87,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           }
         }
         
-        tasks.add(
+        verificationTasks.add(
           VerificationTask(
             id: id,
             userId: userId,
@@ -88,8 +100,32 @@ class _AdminDashboardState extends State<AdminDashboard> {
         );
       }
 
+      final List<ModeratedPhoto> pendingPhotos = [];
+      for (final row in (photosResponse as List)) {
+        final id = row['id']?.toString() ?? '';
+        final userId = row['user_id']?.toString() ?? '';
+        final publicUrl = row['public_url']?.toString() ?? '';
+        final isPrimary = row['is_primary'] as bool? ?? false;
+        final profilesMap = row['profiles'] as Map<String, dynamic>?;
+        
+        final userName = profilesMap?['public_name']?.toString() ?? 'Unknown';
+        final userAge = int.tryParse(profilesMap?['age']?.toString() ?? '') ?? 0;
+        
+        pendingPhotos.add(
+          ModeratedPhoto(
+            id: id,
+            userId: userId,
+            userName: userName,
+            userAge: userAge,
+            imageUrl: publicUrl,
+            isPrimary: isPrimary,
+          ),
+        );
+      }
+
       setState(() {
-        _verifications = tasks;
+        _verifications = verificationTasks;
+        _pendingPhotos = pendingPhotos;
         _reports = [
           ReportTask(
             id: 'r1',
@@ -237,8 +273,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
               children: [
                 const SizedBox(height: 20.0),
                 _buildSidebarItem(0, Icons.verified_user_outlined, 'Verifications'),
-                _buildSidebarItem(1, Icons.report_gmailerrorred_rounded, 'Reports'),
-                _buildSidebarItem(2, Icons.history_edu_rounded, 'Audit Logs'),
+                _buildSidebarItem(1, Icons.image_search_rounded, 'Images Review'),
+                _buildSidebarItem(2, Icons.report_gmailerrorred_rounded, 'Reports'),
+                _buildSidebarItem(3, Icons.history_edu_rounded, 'Audit Logs'),
                 const Spacer(),
                 const Text('Role: Super Admin', style: TextStyle(color: Colors.white54, fontSize: 12.0)),
                 const SizedBox(height: 20.0),
@@ -282,8 +319,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
       case 0:
         return _buildVerificationsQueue();
       case 1:
-        return _buildReportsQueue();
+        return _buildImagesReviewQueue();
       case 2:
+        return _buildReportsQueue();
+      case 3:
         return _buildAuditLogsView();
       default:
         return const SizedBox();
@@ -419,6 +458,365 @@ class _AdminDashboardState extends State<AdminDashboard> {
         );
       },
     );
+  }
+
+  Widget _buildImagesReviewQueue() {
+    if (_pendingPhotos.isEmpty) {
+      return const Center(
+        child: Text(
+          'No pending photos to review. Well done!',
+          style: TextStyle(fontSize: 16.0, color: AppColors.textSecondary),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Images Review Queue',
+          style: TextStyle(
+            fontSize: 20.0,
+            fontWeight: FontWeight.bold,
+            color: AppColors.primaryBurgundy,
+          ),
+        ),
+        const SizedBox(height: 16.0),
+        Expanded(
+          child: GridView.builder(
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              crossAxisSpacing: 16.0,
+              mainAxisSpacing: 16.0,
+              childAspectRatio: 0.70,
+            ),
+            itemCount: _pendingPhotos.length,
+            itemBuilder: (context, index) {
+              final photo = _pendingPhotos[index];
+              return Card(
+                clipBehavior: Clip.antiAlias,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // The Image itself
+                    Expanded(
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          Image.network(
+                            photo.imageUrl,
+                            fit: BoxFit.cover,
+                          ),
+                          Positioned(
+                            top: 8,
+                            left: 8,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.6),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                photo.isPrimary ? 'Primary Photo' : 'Gallery Photo',
+                                style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    
+                    // User Details and Actions
+                    Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${photo.userName}, ${photo.userAge}',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5),
+                          ),
+                          const SizedBox(height: 8.0),
+                          
+                          // Approve/Reject row
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: () => _rejectPhotoPrompt(photo),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: AppColors.error,
+                                    side: const BorderSide(color: AppColors.error),
+                                    padding: EdgeInsets.zero,
+                                  ),
+                                  child: const Text('Reject', style: TextStyle(fontSize: 12.0)),
+                                ),
+                              ),
+                              const SizedBox(width: 8.0),
+                              Expanded(
+                                child: FilledButton(
+                                  onPressed: () => _approvePhoto(photo),
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: AppColors.success,
+                                    padding: EdgeInsets.zero,
+                                  ),
+                                  child: const Text('Accept', style: TextStyle(fontSize: 12.0)),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6.0),
+                          
+                          // Ban/Delete row
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: () => _banUserPrompt(photo),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.orange,
+                                    side: const BorderSide(color: Colors.orange),
+                                    padding: EdgeInsets.zero,
+                                  ),
+                                  child: const Text('Ban User', style: TextStyle(fontSize: 11.0)),
+                                ),
+                              ),
+                              const SizedBox(width: 6.0),
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: () => _deleteUserPrompt(photo),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.red,
+                                    side: const BorderSide(color: Colors.red),
+                                    padding: EdgeInsets.zero,
+                                  ),
+                                  child: const Text('Delete User', style: TextStyle(fontSize: 11.0)),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _approvePhoto(ModeratedPhoto photo) async {
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase
+          .from('profile_photos')
+          .update({'moderation_status': 'approved'})
+          .eq('id', photo.id);
+
+      setState(() {
+        _pendingPhotos.removeWhere((p) => p.id == photo.id);
+        _auditLogs.insert(0, '[INFO] ${DateTime.now().toString().substring(11, 16)} - Approved photo for ${photo.userName}');
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Photo approved successfully.'), backgroundColor: AppColors.success),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error approving photo: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    }
+  }
+
+  void _rejectPhotoPrompt(ModeratedPhoto photo) {
+    final reasons = [
+      'Inappropriate or NSFW content',
+      'Fake or downloaded photo from internet',
+      'Group photo (must show only one person)',
+      'Low quality or extremely blurry',
+      'Contains contact info or external links',
+    ];
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Reject Photo'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: reasons.map((reason) {
+              return ListTile(
+                title: Text(reason),
+                onTap: () {
+                  Navigator.pop(context);
+                  _rejectPhoto(photo, reason);
+                },
+              );
+            }).toList(),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _rejectPhoto(ModeratedPhoto photo, String reason) async {
+    try {
+      final supabase = Supabase.instance.client;
+      
+      // Update photo status to rejected
+      await supabase
+          .from('profile_photos')
+          .update({'moderation_status': 'rejected'})
+          .eq('id', photo.id);
+
+      // If it was primary, remove it from main_photo_id on profiles
+      if (photo.isPrimary) {
+        await supabase
+            .from('profiles')
+            .update({'main_photo_id': null})
+            .eq('id', photo.userId);
+      }
+
+      setState(() {
+        _pendingPhotos.removeWhere((p) => p.id == photo.id);
+        _auditLogs.insert(0, '[REJECT] ${DateTime.now().toString().substring(11, 16)} - Rejected photo for ${photo.userName}. Reason: $reason');
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Photo rejected: $reason'), backgroundColor: AppColors.error),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error rejecting photo: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    }
+  }
+
+  void _banUserPrompt(ModeratedPhoto photo) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Ban User'),
+          content: Text('Are you sure you want to suspend and ban the user ${photo.userName}? All of their photos will be rejected.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _banUser(photo);
+              },
+              child: const Text('Ban', style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _banUser(ModeratedPhoto photo) async {
+    try {
+      final supabase = Supabase.instance.client;
+      
+      // Update profile status to suspended
+      await supabase
+          .from('profiles')
+          .update({'profile_status': 'suspended'})
+          .eq('id', photo.userId);
+
+      // Reject all photos of this user
+      await supabase
+          .from('profile_photos')
+          .update({'moderation_status': 'rejected'})
+          .eq('user_id', photo.userId);
+
+      setState(() {
+        _pendingPhotos.removeWhere((p) => p.userId == photo.userId);
+        _verifications.removeWhere((v) => v.userId == photo.userId);
+        _auditLogs.insert(0, '[BAN] ${DateTime.now().toString().substring(11, 16)} - Suspended and banned user ${photo.userName}');
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('User ${photo.userName} has been suspended.'), backgroundColor: AppColors.error),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error suspending user: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    }
+  }
+
+  void _deleteUserPrompt(ModeratedPhoto photo) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Delete User Account'),
+          content: Text('Are you sure you want to permanently delete the user account ${photo.userName}? This action cannot be undone.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _deleteUser(photo);
+              },
+              child: const Text('Delete Permanently', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _deleteUser(ModeratedPhoto photo) async {
+    try {
+      final supabase = Supabase.instance.client;
+      
+      // Delete user profile (cascades to other tables)
+      await supabase
+          .from('profiles')
+          .delete()
+          .eq('id', photo.userId);
+
+      setState(() {
+        _pendingPhotos.removeWhere((p) => p.userId == photo.userId);
+        _verifications.removeWhere((v) => v.userId == photo.userId);
+        _auditLogs.insert(0, '[DELETE] ${DateTime.now().toString().substring(11, 16)} - Permanently deleted user ${photo.userName}');
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('User ${photo.userName} permanently deleted.'), backgroundColor: AppColors.error),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error deleting user: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    }
   }
 
   Widget _buildReportsQueue() {
@@ -650,4 +1048,22 @@ class _VideoPlayerDialogState extends State<VideoPlayerDialog> {
       ),
     );
   }
+}
+
+class ModeratedPhoto {
+  final String id;
+  final String userId;
+  final String userName;
+  final int userAge;
+  final String imageUrl;
+  final bool isPrimary;
+
+  ModeratedPhoto({
+    required this.id,
+    required this.userId,
+    required this.userName,
+    required this.userAge,
+    required this.imageUrl,
+    required this.isPrimary,
+  });
 }
