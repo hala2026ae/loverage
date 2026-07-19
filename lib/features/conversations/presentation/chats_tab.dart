@@ -29,6 +29,8 @@ class _ChatsTabState extends ConsumerState<ChatsTab>
   List<_Request> _receivedRequests = [];
   List<_Request> _sentRequests = [];
   late int _requestTabIndex;
+  RealtimeChannel? _conversationsChannel;
+  RealtimeChannel? _requestsChannel;
 
   @override
   void initState() {
@@ -43,6 +45,36 @@ class _ChatsTabState extends ConsumerState<ChatsTab>
       if (mounted) setState(() {});
     });
     _loadData();
+    _subscribeToRealtime();
+  }
+
+  void _subscribeToRealtime() {
+    final userId = Supabase.instance.client.auth.currentSession?.user.id;
+    if (userId == null) return;
+
+    _conversationsChannel = Supabase.instance.client
+        .channel('conversations-realtime')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'conversations',
+          callback: (_) {
+            if (mounted) _loadData();
+          },
+        )
+        .subscribe();
+
+    _requestsChannel = Supabase.instance.client
+        .channel('requests-realtime')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'chat_requests',
+          callback: (_) {
+            if (mounted) _loadData();
+          },
+        )
+        .subscribe();
   }
 
   @override
@@ -61,6 +93,12 @@ class _ChatsTabState extends ConsumerState<ChatsTab>
   @override
   void dispose() {
     _tabCtrl.dispose();
+    if (_conversationsChannel != null) {
+      Supabase.instance.client.removeChannel(_conversationsChannel!);
+    }
+    if (_requestsChannel != null) {
+      Supabase.instance.client.removeChannel(_requestsChannel!);
+    }
     super.dispose();
   }
 
@@ -98,7 +136,10 @@ class _ChatsTabState extends ConsumerState<ChatsTab>
       final conversationId = await _repository.acceptChatRequest(r.id);
       if (!mounted) return;
       setState(() => _receivedRequests.removeWhere((x) => x.id == r.id));
-      context.push('/chat/$conversationId');
+      await context.push('/chat/$conversationId');
+      if (mounted) {
+        _loadData();
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
