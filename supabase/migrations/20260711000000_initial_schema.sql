@@ -19,7 +19,7 @@ CREATE TABLE public.profiles (
     verification_status TEXT DEFAULT 'not_submitted' CONSTRAINT check_verification_status CHECK (verification_status IN ('not_submitted', 'pending', 'approved', 'rejected')),
     profile_status TEXT DEFAULT 'registration_incomplete' CONSTRAINT check_profile_status CHECK (profile_status IN ('registration_incomplete', 'verification_not_submitted', 'verification_pending', 'active', 'suspended', 'deactivated', 'deletion_scheduled')),
     profile_completion INTEGER DEFAULT 0 CONSTRAINT check_completion_range CHECK (profile_completion BETWEEN 0 AND 100),
-    main_image_id UUID, -- References profile_images(id) but added later to avoid circular constraint
+    main_photo_id UUID, -- References profile_photos(id) but added later to avoid circular constraint
     created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT now() NOT NULL,
     last_active_at TIMESTAMPTZ
@@ -36,18 +36,19 @@ CREATE TABLE public.private_user_data (
     updated_at TIMESTAMPTZ DEFAULT now() NOT NULL
 );
 
--- 3. Profile Images (Only approved images appear in public feed)
-CREATE TABLE public.profile_images (
+-- 3. Profile Photos (Only approved images appear in public feed)
+CREATE TABLE public.profile_photos (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
-    storage_path TEXT NOT NULL,
-    is_main BOOLEAN DEFAULT false NOT NULL,
+    public_url TEXT NOT NULL,
+    is_primary BOOLEAN DEFAULT false NOT NULL,
+    sort_order INTEGER DEFAULT 0 NOT NULL,
     moderation_status TEXT DEFAULT 'pending' CONSTRAINT check_moderation_status CHECK (moderation_status IN ('pending', 'approved', 'rejected')),
     created_at TIMESTAMPTZ DEFAULT now() NOT NULL
 );
 
 -- Complete circular dependency for profiles
-ALTER TABLE public.profiles ADD CONSTRAINT fk_profiles_main_image FOREIGN KEY (main_image_id) REFERENCES public.profile_images(id) ON DELETE SET NULL;
+ALTER TABLE public.profiles ADD CONSTRAINT fk_profiles_main_photo FOREIGN KEY (main_photo_id) REFERENCES public.profile_photos(id) ON DELETE SET NULL;
 
 -- 4. Profile Optional Details
 CREATE TABLE public.profile_optional_details (
@@ -154,26 +155,22 @@ CREATE UNIQUE INDEX unique_pending_chat_request ON public.chat_requests(sender_i
 -- 10. Real-Time Conversations & Messaging
 CREATE TABLE public.conversations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+    participant_a UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+    participant_b UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
     last_message_preview TEXT,
     last_message_at TIMESTAMPTZ,
-    last_sender_id UUID REFERENCES auth.users(id) ON DELETE SET NULL
-);
-
-CREATE TABLE public.conversation_members (
-    conversation_id UUID REFERENCES public.conversations(id) ON DELETE CASCADE NOT NULL,
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
-    unread_count INTEGER DEFAULT 0 NOT NULL,
-    last_read_at TIMESTAMPTZ DEFAULT now() NOT NULL,
-    is_muted BOOLEAN DEFAULT false NOT NULL,
-    PRIMARY KEY (conversation_id, user_id)
+    last_sender_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+    CONSTRAINT check_different_participants CHECK (participant_a <> participant_b)
 );
 
 CREATE TABLE public.messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id UUID REFERENCES public.conversations(id) ON DELETE CASCADE NOT NULL,
     sender_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
-    content TEXT NOT NULL CONSTRAINT check_message_content CHECK (char_length(content) > 0 AND char_length(content) <= 2000),
+    body TEXT NOT NULL CONSTRAINT check_message_body CHECK (char_length(body) > 0 AND char_length(body) <= 2000),
+    read_at TIMESTAMPTZ,
     idempotency_key TEXT,
     created_at TIMESTAMPTZ DEFAULT now() NOT NULL
 );
@@ -294,6 +291,7 @@ CREATE TRIGGER update_user_filters_timestamp BEFORE UPDATE ON public.user_filter
 CREATE TRIGGER update_knocks_timestamp BEFORE UPDATE ON public.knocks FOR EACH ROW EXECUTE FUNCTION update_modified_column();
 CREATE TRIGGER update_chat_requests_timestamp BEFORE UPDATE ON public.chat_requests FOR EACH ROW EXECUTE FUNCTION update_modified_column();
 CREATE TRIGGER update_subscriptions_timestamp BEFORE UPDATE ON public.subscriptions FOR EACH ROW EXECUTE FUNCTION update_modified_column();
+CREATE TRIGGER update_conversations_timestamp BEFORE UPDATE ON public.conversations FOR EACH ROW EXECUTE FUNCTION update_modified_column();
 
 -- B. Handle New User Trigger (Initial account setup on sign-up)
 CREATE OR REPLACE FUNCTION public.handle_new_user()
@@ -355,6 +353,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 CREATE TRIGGER enforce_profile_security
     BEFORE UPDATE OF verification_status, profile_status ON public.profiles
     FOR EACH ROW EXECUTE FUNCTION public.check_profile_status_safety();
+
+CREATE OR REPLACE FUNCTION public.get_my_gender()
+RETURNS TEXT AS $$
+  SELECT gender FROM public.profiles WHERE id = auth.uid();
+$$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 
 
 -- ==========================================
@@ -482,18 +485,14 @@ BEGIN
     UPDATE public.knocks SET status = 'approved' WHERE id = knock_id;
 
     -- Create or retrieve conversation
-    SELECT c.id INTO v_conv_id FROM public.conversations c
-    JOIN public.conversation_members m1 ON c.id = m1.conversation_id
-    JOIN public.conversation_members m2 ON c.id = m2.conversation_id
-    WHERE m1.user_id = v_sender_id AND m2.user_id = v_receiver_id;
+    SELECT id INTO v_conv_id FROM public.conversations
+    WHERE (participant_a = v_sender_id AND participant_b = v_receiver_id)
+       OR (participant_a = v_receiver_id AND participant_b = v_sender_id);
 
     IF v_conv_id IS NULL THEN
-        INSERT INTO public.conversations (last_message_preview, last_message_at)
-        VALUES ('Knock accepted! Start your conversation here.', now())
+        INSERT INTO public.conversations (participant_a, participant_b, last_message_preview, last_message_at)
+        VALUES (v_sender_id, v_receiver_id, 'Knock accepted! Start your conversation here.', now())
         RETURNING id INTO v_conv_id;
-
-        INSERT INTO public.conversation_members (conversation_id, user_id) VALUES (v_conv_id, v_sender_id);
-        INSERT INTO public.conversation_members (conversation_id, user_id) VALUES (v_conv_id, v_receiver_id);
     END IF;
 
     -- Notify sender
@@ -595,7 +594,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- Enable RLS globally
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.private_user_data ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.profile_images ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.profile_photos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.profile_optional_details ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.profile_traits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.profile_interests ENABLE ROW LEVEL SECURITY;
@@ -605,7 +604,6 @@ ALTER TABLE public.community_rule_acceptances ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.knocks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.chat_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.conversation_members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.device_tokens ENABLE ROW LEVEL SECURITY;
@@ -620,7 +618,7 @@ CREATE POLICY "Users can view opposite gender active profiles" ON public.profile
         id = auth.uid() 
         OR (
             profile_status = 'active'
-            AND gender <> (SELECT gender FROM public.profiles WHERE id = auth.uid())
+            AND gender <> public.get_my_gender()
             AND NOT EXISTS (SELECT 1 FROM public.blocks WHERE blocker_id = auth.uid() AND blocked_id = profiles.id)
             AND NOT EXISTS (SELECT 1 FROM public.blocks WHERE blocker_id = profiles.id AND blocked_id = auth.uid())
         )
@@ -633,30 +631,34 @@ CREATE POLICY "Users can update their own profile" ON public.profiles
 CREATE POLICY "Users can only read/write their own private user data" ON public.private_user_data
     FOR ALL USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
 
--- 3. Profile Images Policies
-CREATE POLICY "Users can read approved profile images of the opposite gender" ON public.profile_images
+-- 3. Profile Photos Policies
+CREATE POLICY "Users can read approved profile photos of the opposite gender" ON public.profile_photos
     FOR SELECT USING (
         user_id = auth.uid()
         OR (
             moderation_status = 'approved'
             AND EXISTS (
                 SELECT 1 FROM public.profiles 
-                WHERE id = profile_images.user_id 
+                WHERE id = profile_photos.user_id 
                 AND profile_status = 'active'
-                AND gender <> (SELECT gender FROM public.profiles WHERE id = auth.uid())
+                AND gender <> public.get_my_gender()
             )
         )
     );
 
-CREATE POLICY "Users can manage their own profile images" ON public.profile_images
+CREATE POLICY "Users can manage their own profile photos" ON public.profile_photos
     FOR ALL USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
 
--- 4. Messages Policies
+-- 4. Conversations & Messages Policies
+CREATE POLICY "Users can read their own conversations" ON public.conversations
+    FOR SELECT USING (participant_a = auth.uid() OR participant_b = auth.uid());
+
 CREATE POLICY "Members can read conversation messages" ON public.messages
     FOR SELECT USING (
         EXISTS (
-            SELECT 1 FROM public.conversation_members 
-            WHERE conversation_id = messages.conversation_id AND user_id = auth.uid()
+            SELECT 1 FROM public.conversations 
+            WHERE id = messages.conversation_id 
+              AND (participant_a = auth.uid() OR participant_b = auth.uid())
         )
     );
 
@@ -664,14 +666,14 @@ CREATE POLICY "Members can insert messages in active conversations" ON public.me
     FOR INSERT WITH CHECK (
         sender_id = auth.uid()
         AND EXISTS (
-            SELECT 1 FROM public.conversation_members 
-            WHERE conversation_id = messages.conversation_id AND user_id = auth.uid()
+            SELECT 1 FROM public.conversations 
+            WHERE id = messages.conversation_id 
+              AND (participant_a = auth.uid() OR participant_b = auth.uid())
         )
         AND NOT EXISTS (
             -- Check if other member blocked sender
-            SELECT 1 FROM public.blocks b
-            JOIN public.conversation_members m ON m.user_id = b.blocker_id
-            WHERE m.conversation_id = messages.conversation_id AND b.blocked_id = auth.uid()
+            SELECT 1 FROM public.blocks 
+            WHERE (blocker_id = (SELECT CASE WHEN participant_a = auth.uid() THEN participant_b ELSE participant_a END FROM public.conversations WHERE id = messages.conversation_id) AND blocked_id = auth.uid())
         )
     );
 

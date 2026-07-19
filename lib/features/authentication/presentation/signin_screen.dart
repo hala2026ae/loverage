@@ -3,9 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme/app_theme.dart';
 import '../domain/auth_repository_interface.dart';
+import 'auth_brand_widgets.dart';
+import 'auth_form_helpers.dart';
 
 class SigninScreen extends ConsumerStatefulWidget {
-  const SigninScreen({super.key});
+  final String initialEmail;
+  const SigninScreen({super.key, this.initialEmail = ''});
 
   @override
   ConsumerState<SigninScreen> createState() => _SigninScreenState();
@@ -18,6 +21,8 @@ class _SigninScreenState extends ConsumerState<SigninScreen>
   final _passCtrl = TextEditingController();
   bool _obscure = true;
   bool _loading = false;
+  bool _isLoadingGoogle = false;
+  bool _isLoadingApple = false;
   String? _errorMsg;
 
   late final AnimationController _animCtrl;
@@ -27,10 +32,16 @@ class _SigninScreenState extends ConsumerState<SigninScreen>
   @override
   void initState() {
     super.initState();
-    _animCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 700));
+    _emailCtrl.text = widget.initialEmail;
+    _animCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    );
     _fadeAnim = CurvedAnimation(parent: _animCtrl, curve: Curves.easeOut);
-    _slideAnim = Tween<Offset>(begin: const Offset(0, 0.12), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _animCtrl, curve: Curves.easeOutCubic));
+    _slideAnim = Tween<Offset>(
+      begin: const Offset(0, 0.12),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _animCtrl, curve: Curves.easeOutCubic));
     Future.delayed(const Duration(milliseconds: 100), _animCtrl.forward);
   }
 
@@ -44,17 +55,34 @@ class _SigninScreenState extends ConsumerState<SigninScreen>
 
   Future<void> _signIn() async {
     if (!_formKey.currentState!.validate()) return;
-    setState(() { _loading = true; _errorMsg = null; });
+    setState(() {
+      _loading = true;
+      _errorMsg = null;
+    });
     try {
       final repo = ref.read(authRepositoryProvider);
       await repo.signInWithEmailAndPassword(
-        email: _emailCtrl.text.trim(),
+        email: normalizeEmail(_emailCtrl.text),
         password: _passCtrl.text,
       );
     } catch (e) {
-      setState(() => _errorMsg = 'Incorrect email or password. Please try again.');
+      setState(() => _errorMsg = authErrorMessage(e));
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _signInWithApple() async {
+    setState(() {
+      _isLoadingApple = true;
+      _errorMsg = null;
+    });
+    try {
+      await ref.read(authRepositoryProvider).signInWithApple();
+    } catch (e) {
+      if (mounted) setState(() => _errorMsg = authErrorMessage(e));
+    } finally {
+      if (mounted) setState(() => _isLoadingApple = false);
     }
   }
 
@@ -64,13 +92,35 @@ class _SigninScreenState extends ConsumerState<SigninScreen>
       backgroundColor: AppColors.backgroundLight,
       body: Stack(
         children: [
-          // ── Burgundy top header fill ─────────────────────────────────────
           Positioned(
-            top: 0, left: 0, right: 0,
-            child: Container(
-              height: MediaQuery.of(context).size.height * 0.38,
-              decoration: const BoxDecoration(
-                gradient: AppColors.primaryGradient,
+            top: 0,
+            left: 0,
+            right: 0,
+            child: SizedBox(
+              height: MediaQuery.of(context).size.height * 0.62,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Image.asset(
+                    'Assets/auth_signin_argentina_nigeria_couple_hero.png',
+                    fit: BoxFit.cover,
+                    alignment: Alignment.topCenter,
+                  ),
+                  Container(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Color(0x442B020B),
+                          Color(0x223C0715),
+                          Color(0xFF1E0106),
+                        ],
+                        stops: [0.0, 0.52, 1.0],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -80,48 +130,53 @@ class _SigninScreenState extends ConsumerState<SigninScreen>
               children: [
                 // ── Top bar ──────────────────────────────────────────────
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8.0,
+                    vertical: 4.0,
+                  ),
                   child: Row(
                     children: [
                       IconButton(
                         onPressed: () => context.pop(),
-                        icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white, size: 20),
+                        icon: const Icon(
+                          Icons.arrow_back_ios_new_rounded,
+                          color: Colors.white,
+                          size: 20,
+                        ),
                       ),
                     ],
                   ),
                 ),
 
-                // ── Header text ──────────────────────────────────────────
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 28.0),
+                Center(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Welcome\nback',
-                        style: TextStyle(
-                          fontFamily: 'Inter',
-                          fontSize: 38.0,
-                          fontWeight: FontWeight.w800,
-                          color: Colors.white,
-                          letterSpacing: -1.0,
-                          height: 1.1,
-                        ),
+                      Image.asset(
+                        'Assets/loverage text.png',
+                        height: 30,
+                        fit: BoxFit.contain,
+                        color: Colors.white,
+                        colorBlendMode: BlendMode.srcIn,
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'Sign in to continue your journey',
+                        'Log in',
                         style: TextStyle(
-                          color: Colors.white.withOpacity(0.65),
-                          fontSize: 15.0,
-                          height: 1.5,
+                          color: Colors.white.withValues(alpha: 0.82),
+                          fontSize: 15,
+                          fontWeight: FontWeight.w300,
+                          letterSpacing: 0.2,
                         ),
                       ),
                     ],
                   ),
                 ),
 
-                const SizedBox(height: 32.0),
+                SizedBox(
+                  height: (MediaQuery.of(context).size.height * 0.305)
+                      .clamp(250.0, 315.0)
+                      .toDouble(),
+                ),
 
                 // ── Form card ────────────────────────────────────────────
                 Expanded(
@@ -131,19 +186,45 @@ class _SigninScreenState extends ConsumerState<SigninScreen>
                       position: _slideAnim,
                       child: Container(
                         decoration: const BoxDecoration(
-                          color: AppColors.backgroundLight,
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [Color(0xFFFFFCFA), Color(0xFFFAF1EE)],
+                          ),
                           borderRadius: BorderRadius.only(
                             topLeft: Radius.circular(32),
                             topRight: Radius.circular(32),
                           ),
+                          border: Border.fromBorderSide(
+                            BorderSide(color: Color(0xFFFFE1D4)),
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Color(0x22000000),
+                              blurRadius: 22,
+                              offset: Offset(0, -6),
+                            ),
+                          ],
                         ),
                         child: SingleChildScrollView(
-                          padding: const EdgeInsets.fromLTRB(28, 32, 28, 24),
+                          padding: const EdgeInsets.fromLTRB(22, 14, 22, 18),
                           child: Form(
                             key: _formKey,
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
+                                Center(
+                                  child: Container(
+                                    width: 46,
+                                    height: 4,
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    decoration: BoxDecoration(
+                                      gradient: AppColors.roseGoldGradient,
+                                      borderRadius: BorderRadius.circular(99),
+                                    ),
+                                  ),
+                                ),
+
                                 // Email field
                                 _FieldLabel(label: 'Email address'),
                                 const SizedBox(height: 8),
@@ -154,11 +235,41 @@ class _SigninScreenState extends ConsumerState<SigninScreen>
                                   style: const TextStyle(fontSize: 15.0),
                                   decoration: const InputDecoration(
                                     hintText: 'you@example.com',
-                                    prefixIcon: Icon(Icons.mail_outline_rounded, size: 20, color: AppColors.textMuted),
+                                    filled: true,
+                                    fillColor: Color(0xFFFFFBFA),
+                                    contentPadding: EdgeInsets.symmetric(
+                                      horizontal: 14,
+                                      vertical: 13,
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.all(
+                                        Radius.circular(18),
+                                      ),
+                                      borderSide: BorderSide(
+                                        color: Color(0xFFEADDD8),
+                                      ),
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.all(
+                                        Radius.circular(18),
+                                      ),
+                                      borderSide: BorderSide(
+                                        color: AppColors.primaryBurgundy,
+                                        width: 1.4,
+                                      ),
+                                    ),
+                                    prefixIconConstraints: BoxConstraints(
+                                      minWidth: 48,
+                                    ),
+                                    prefixIcon: Icon(
+                                      Icons.mail_outline_rounded,
+                                      size: 20,
+                                      color: AppColors.textMuted,
+                                    ),
                                   ),
-                                  validator: (v) => (v == null || !v.contains('@')) ? 'Enter a valid email' : null,
+                                  validator: validateEmailAddress,
                                 ),
-                                const SizedBox(height: 20),
+                                const SizedBox(height: 14),
 
                                 // Password field
                                 _FieldLabel(label: 'Password'),
@@ -171,24 +282,80 @@ class _SigninScreenState extends ConsumerState<SigninScreen>
                                   style: const TextStyle(fontSize: 15.0),
                                   decoration: InputDecoration(
                                     hintText: '••••••••',
-                                    prefixIcon: const Icon(Icons.lock_outline_rounded, size: 20, color: AppColors.textMuted),
+                                    filled: true,
+                                    fillColor: const Color(0xFFFFFBFA),
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 14,
+                                      vertical: 13,
+                                    ),
+                                    enabledBorder: const OutlineInputBorder(
+                                      borderRadius: BorderRadius.all(
+                                        Radius.circular(18),
+                                      ),
+                                      borderSide: BorderSide(
+                                        color: Color(0xFFEADDD8),
+                                      ),
+                                    ),
+                                    focusedBorder: const OutlineInputBorder(
+                                      borderRadius: BorderRadius.all(
+                                        Radius.circular(18),
+                                      ),
+                                      borderSide: BorderSide(
+                                        color: AppColors.primaryBurgundy,
+                                        width: 1.4,
+                                      ),
+                                    ),
+                                    prefixIconConstraints: const BoxConstraints(
+                                      minWidth: 48,
+                                    ),
+                                    suffixIconConstraints: const BoxConstraints(
+                                      minWidth: 48,
+                                    ),
+                                    prefixIcon: const Icon(
+                                      Icons.lock_outline_rounded,
+                                      size: 20,
+                                      color: AppColors.textMuted,
+                                    ),
                                     suffixIcon: IconButton(
-                                      onPressed: () => setState(() => _obscure = !_obscure),
+                                      onPressed: () =>
+                                          setState(() => _obscure = !_obscure),
                                       icon: Icon(
-                                        _obscure ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                                        _obscure
+                                            ? Icons.visibility_off_outlined
+                                            : Icons.visibility_outlined,
                                         size: 20,
                                         color: AppColors.textMuted,
                                       ),
                                     ),
                                   ),
-                                  validator: (v) => (v == null || v.length < 6) ? 'Minimum 6 characters' : null,
+                                  validator: (v) => (v == null || v.length < 6)
+                                      ? 'Minimum 6 characters'
+                                      : null,
                                 ),
 
                                 // Forgot password
                                 Align(
                                   alignment: Alignment.centerRight,
                                   child: TextButton(
-                                    onPressed: () {},
+                                    onPressed: () {
+                                      final email = normalizeEmail(
+                                        _emailCtrl.text,
+                                      );
+                                      context.push(
+                                        email.isEmpty
+                                            ? '/forgot-password'
+                                            : '/forgot-password?email=${Uri.encodeComponent(email)}',
+                                      );
+                                    },
+                                    style: TextButton.styleFrom(
+                                      minimumSize: const Size(0, 34),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 4,
+                                      ),
+                                      tapTargetSize:
+                                          MaterialTapTargetSize.shrinkWrap,
+                                    ),
                                     child: const Text(
                                       'Forgot password?',
                                       style: TextStyle(
@@ -207,38 +374,88 @@ class _SigninScreenState extends ConsumerState<SigninScreen>
                                   const SizedBox(height: 12),
                                 ],
 
-                                const SizedBox(height: 8),
+                                const SizedBox(height: 4),
 
                                 // Sign in button
                                 _loading
-                                    ? const Center(child: CircularProgressIndicator(color: AppColors.primaryBurgundy))
-                                    : _GradientButton(label: 'Sign In', onPressed: _signIn),
+                                    ? const Center(
+                                        child: CircularProgressIndicator(
+                                          color: AppColors.primaryBurgundy,
+                                        ),
+                                      )
+                                    : AuthPrimaryButton(
+                                        label: 'Sign In',
+                                        onPressed: _signIn,
+                                        tone: AuthPrimaryButtonTone.signIn,
+                                      ),
 
-                                const SizedBox(height: 36),
+                                const SizedBox(height: 24),
 
                                 // Social divider
                                 Row(
                                   children: [
-                                    const Expanded(child: Divider()),
+                                    const Expanded(
+                                      child: Divider(color: Color(0x44D4956A)),
+                                    ),
                                     Padding(
-                                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 16,
+                                      ),
                                       child: Text(
                                         'or sign in with',
-                                        style: TextStyle(color: AppColors.textMuted, fontSize: 12.5),
+                                        style: TextStyle(
+                                          color: AppColors.textMuted,
+                                          fontSize: 12.5,
+                                        ),
                                       ),
                                     ),
-                                    const Expanded(child: Divider()),
+                                    const Expanded(
+                                      child: Divider(color: Color(0x44D4956A)),
+                                    ),
                                   ],
                                 ),
+                                const SizedBox(height: 12),
+                                _isLoadingGoogle
+                                    ? const Center(
+                                        child: SizedBox(
+                                          width: 24,
+                                          height: 24,
+                                          child: CircularProgressIndicator(
+                                            color: AppColors.primaryBurgundy,
+                                            strokeWidth: 2,
+                                          ),
+                                        ),
+                                      )
+                                    : SocialAuthButton(
+                                        icon: const GoogleLogo(),
+                                        label: 'Continue with Google',
+                                        onPressed: () async {
+                                          setState(() {
+                                            _isLoadingGoogle = true;
+                                            _errorMsg = null;
+                                          });
+                                          try {
+                                            final repo = ref.read(
+                                              authRepositoryProvider,
+                                            );
+                                            await repo.signInWithGoogle();
+                                          } catch (e) {
+                                            if (mounted) {
+                                              setState(
+                                                () => _errorMsg =
+                                                    authErrorMessage(e),
+                                              );
+                                            }
+                                          } finally {
+                                            if (mounted) {
+                                              setState(
+                                                () => _isLoadingGoogle = false,
+                                              );
+                                            }
+                                          }
+                                        },
+                                      ),
                                 const SizedBox(height: 20),
-                                Row(
-                                  children: [
-                                    Expanded(child: _OutlineSocialBtn(icon: Icons.apple, label: 'Apple', onPressed: () {})),
-                                    const SizedBox(width: 14),
-                                    Expanded(child: _OutlineSocialBtn(icon: Icons.g_mobiledata_rounded, label: 'Google', onPressed: () {})),
-                                  ],
-                                ),
-                                const SizedBox(height: 32),
 
                                 // Register link
                                 Center(
@@ -247,7 +464,10 @@ class _SigninScreenState extends ConsumerState<SigninScreen>
                                     child: RichText(
                                       text: TextSpan(
                                         text: "Don't have an account?  ",
-                                        style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
+                                        style: TextStyle(
+                                          color: AppColors.textSecondary,
+                                          fontSize: 14,
+                                        ),
                                         children: const [
                                           TextSpan(
                                             text: 'Create one',
@@ -284,14 +504,14 @@ class _FieldLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Text(
-        label,
-        style: const TextStyle(
-          fontSize: 13.5,
-          fontWeight: FontWeight.w600,
-          color: AppColors.textPrimary,
-          letterSpacing: 0.1,
-        ),
-      );
+    label,
+    style: const TextStyle(
+      fontSize: 13.5,
+      fontWeight: FontWeight.w600,
+      color: AppColors.textPrimary,
+      letterSpacing: 0.1,
+    ),
+  );
 }
 
 class _ErrorBanner extends StatelessWidget {
@@ -300,81 +520,27 @@ class _ErrorBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        decoration: BoxDecoration(
-          color: AppColors.error.withOpacity(0.07),
-          borderRadius: BorderRadius.circular(AppRadius.s),
-          border: Border.all(color: AppColors.error.withOpacity(0.3)),
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+    decoration: BoxDecoration(
+      color: AppColors.error.withOpacity(0.07),
+      borderRadius: BorderRadius.circular(AppRadius.s),
+      border: Border.all(color: AppColors.error.withOpacity(0.3)),
+    ),
+    child: Row(
+      children: [
+        const Icon(
+          Icons.error_outline_rounded,
+          color: AppColors.error,
+          size: 18,
         ),
-        child: Row(
-          children: [
-            const Icon(Icons.error_outline_rounded, color: AppColors.error, size: 18),
-            const SizedBox(width: 10),
-            Expanded(child: Text(message, style: const TextStyle(color: AppColors.error, fontSize: 13.0))),
-          ],
-        ),
-      );
-}
-
-class _GradientButton extends StatelessWidget {
-  final String label;
-  final VoidCallback onPressed;
-  const _GradientButton({required this.label, required this.onPressed});
-
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap: onPressed,
-        child: Container(
-          height: 56,
-          decoration: BoxDecoration(
-            gradient: AppColors.roseGoldGradient,
-            borderRadius: BorderRadius.circular(AppRadius.circular),
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.accentRoseGold.withOpacity(0.35),
-                blurRadius: 20,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          alignment: Alignment.center,
+        const SizedBox(width: 10),
+        Expanded(
           child: Text(
-            label,
-            style: const TextStyle(
-              color: AppColors.primaryDarkBurgundy,
-              fontSize: 16.0,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.2,
-            ),
+            message,
+            style: const TextStyle(color: AppColors.error, fontSize: 13.0),
           ),
         ),
-      );
-}
-
-class _OutlineSocialBtn extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onPressed;
-  const _OutlineSocialBtn({required this.icon, required this.label, required this.onPressed});
-
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap: onPressed,
-        child: Container(
-          height: 52,
-          decoration: BoxDecoration(
-            color: AppColors.surfaceWhite,
-            borderRadius: BorderRadius.circular(AppRadius.circular),
-            border: Border.all(color: AppColors.borderLight, width: 1.5),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: 22, color: AppColors.textPrimary),
-              const SizedBox(width: 8),
-              Text(label, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
-            ],
-          ),
-        ),
-      );
+      ],
+    ),
+  );
 }

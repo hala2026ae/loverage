@@ -1,0 +1,1 @@
+make pluc lightand smale

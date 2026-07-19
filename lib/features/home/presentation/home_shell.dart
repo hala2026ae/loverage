@@ -10,27 +10,55 @@ import '../../conversations/presentation/chats_tab.dart';
 import '../../account/presentation/account_settings_tab.dart';
 
 class HomeShell extends ConsumerStatefulWidget {
-  const HomeShell({super.key});
+  final int initialIndex;
+  final int initialMessageTabIndex;
+  final int initialRequestTabIndex;
+
+  const HomeShell({
+    super.key,
+    this.initialIndex = 0,
+    this.initialMessageTabIndex = 0,
+    this.initialRequestTabIndex = 1,
+  });
 
   @override
   ConsumerState<HomeShell> createState() => _HomeShellState();
 }
 
 class _HomeShellState extends ConsumerState<HomeShell> {
-  int _currentIndex = 0;
+  late int _currentIndex;
 
-  static const List<Widget> _pages = [
-    HomeFeedTab(),
-    KnocksTab(),
-    ChatsTab(),
-    AccountSettingsTab(),
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex.clamp(0, 3);
+  }
+
+  @override
+  void didUpdateWidget(covariant HomeShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialIndex != widget.initialIndex) {
+      _currentIndex = widget.initialIndex.clamp(0, 3);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      extendBody: true, // Extend body to the bottom of the screen under the navigation bar
-      body: IndexedStack(index: _currentIndex, children: _pages),
+      extendBody:
+          true, // Extend body to the bottom of the screen under the navigation bar
+      body: IndexedStack(
+        index: _currentIndex,
+        children: [
+          const HomeFeedTab(),
+          const KnocksTab(),
+          ChatsTab(
+            initialTabIndex: widget.initialMessageTabIndex,
+            initialRequestTabIndex: widget.initialRequestTabIndex,
+          ),
+          const AccountSettingsTab(),
+        ],
+      ),
       bottomNavigationBar: _LoverageNavBar(
         currentIndex: _currentIndex,
         onTap: (i) => setState(() => _currentIndex = i),
@@ -79,13 +107,19 @@ class _LoverageNavBar extends StatelessWidget {
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                       colors: [
-                        const Color(0xFF8C1A3A).withOpacity(0.92), // Translucent brand burgundy
-                        const Color(0xFF3D0717).withOpacity(0.95), // Translucent brand dark burgundy
+                        const Color(
+                          0xFF8C1A3A,
+                        ).withOpacity(0.92), // Translucent brand burgundy
+                        const Color(
+                          0xFF3D0717,
+                        ).withOpacity(0.95), // Translucent brand dark burgundy
                       ],
                     ),
                     borderRadius: BorderRadius.circular(32),
                     border: Border.all(
-                      color: const Color(0xFF8C1A3A).withOpacity(0.3), // Soft red-burgundy border
+                      color: const Color(
+                        0xFF8C1A3A,
+                      ).withOpacity(0.3), // Soft red-burgundy border
                       width: 1.5,
                     ),
                   ),
@@ -108,21 +142,24 @@ class _LoverageNavBar extends StatelessWidget {
                       height: double.infinity,
                       decoration: BoxDecoration(
                         // Translucent white active highlight on dark burgundy
-                        color: isActive ? Colors.white.withOpacity(0.14) : Colors.transparent,
+                        color: isActive
+                            ? Colors.white.withOpacity(0.14)
+                            : Colors.transparent,
                         borderRadius: i == 0
                             ? const BorderRadius.only(
                                 topLeft: Radius.circular(30.0),
                                 bottomLeft: Radius.circular(30.0),
                               )
                             : i == 3
-                                ? const BorderRadius.only(
-                                    topRight: Radius.circular(30.0),
-                                    bottomRight: Radius.circular(30.0),
-                                  )
-                                : BorderRadius.zero,
+                            ? const BorderRadius.only(
+                                topRight: Radius.circular(30.0),
+                                bottomRight: Radius.circular(30.0),
+                              )
+                            : BorderRadius.zero,
                       ),
                       child: Stack(
-                        clipBehavior: Clip.none, // Allow badge to float outside the tab Stack
+                        clipBehavior: Clip
+                            .none, // Allow badge to float outside the tab Stack
                         alignment: Alignment.center,
                         children: [
                           // Active Top Couple Rings Badge with Red Branding Gradient Circle
@@ -137,7 +174,8 @@ class _LoverageNavBar extends StatelessWidget {
                                   gradient: AppColors.primaryGradient,
                                   boxShadow: [
                                     BoxShadow(
-                                      color: AppColors.primaryBurgundy.withOpacity(0.35),
+                                      color: AppColors.primaryBurgundy
+                                          .withOpacity(0.35),
                                       blurRadius: 3,
                                       offset: const Offset(0, 1.0),
                                     ),
@@ -149,7 +187,8 @@ class _LoverageNavBar extends StatelessWidget {
                                   width: 12,
                                   height: 12,
                                   fit: BoxFit.contain,
-                                  color: Colors.white, // High contrast white tint
+                                  color:
+                                      Colors.white, // High contrast white tint
                                 ),
                               ),
                             ),
@@ -161,7 +200,9 @@ class _LoverageNavBar extends StatelessWidget {
                                   width: 24,
                                   height: 24,
                                   colorFilter: ColorFilter.mode(
-                                    isActive ? Colors.white : Colors.white.withOpacity(0.45),
+                                    isActive
+                                        ? Colors.white
+                                        : Colors.white.withOpacity(0.45),
                                     BlendMode.srcIn,
                                   ),
                                   fit: BoxFit.contain,
@@ -170,7 +211,9 @@ class _LoverageNavBar extends StatelessWidget {
                                   _getIconPath(i),
                                   width: 24,
                                   height: 24,
-                                  color: isActive ? Colors.white : Colors.white.withOpacity(0.45),
+                                  color: isActive
+                                      ? Colors.white
+                                      : Colors.white.withOpacity(0.45),
                                   fit: BoxFit.contain,
                                 ),
                         ],

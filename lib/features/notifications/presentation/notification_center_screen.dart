@@ -45,6 +45,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
 
   Future<void> _markAllAsRead() async {
     await _repository.markAllNotificationsRead();
+    if (!mounted) return;
     setState(() {
       for (var n in _notifications) {
         n.isRead = true;
@@ -58,9 +59,22 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
   Future<void> _onNotificationTap(InAppNotification notification) async {
     if (!notification.isRead) {
       await _repository.markNotificationRead(notification.id);
+      if (!mounted) return;
       setState(() => notification.isRead = true);
     }
-    context.go(notification.routePath);
+    switch (notification.type) {
+      case 'knock_received':
+        context.go('/home?tab=knocks');
+        break;
+      case 'chat_request_received':
+        context.go('/home?tab=messages&requests=received');
+        break;
+      case 'verification_approved':
+        context.go('/home');
+        break;
+      default:
+        context.go(notification.dataRoute ?? '/home');
+    }
   }
 
   @override
@@ -68,21 +82,21 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
     return Scaffold(
       backgroundColor: AppColors.backgroundLight,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0.5,
+        flexibleSpace: Container(
+          decoration: const BoxDecoration(gradient: AppColors.primaryGradient),
+        ),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
         leading: IconButton(
           icon: const Icon(
             Icons.arrow_back_ios_new_rounded,
-            color: AppColors.primaryBurgundy,
+            color: Colors.white,
           ),
           onPressed: () => context.pop(),
         ),
         title: const Text(
           'Notifications',
-          style: TextStyle(
-            color: AppColors.primaryBurgundy,
-            fontWeight: FontWeight.bold,
-          ),
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
         ),
         actions: [
           if (_notifications.any((n) => !n.isRead))
@@ -91,7 +105,7 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
               child: const Text(
                 'Mark all read',
                 style: TextStyle(
-                  color: AppColors.primaryBurgundy,
+                  color: Colors.white,
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -217,8 +231,10 @@ InAppNotification _notificationFromRow(Map<String, dynamic> row) {
     title: (row['title'] as String?) ?? 'Loverage',
     body: (row['body'] as String?) ?? '',
     timeAgo: _timeAgo(DateTime.tryParse((row['created_at'] ?? '').toString())),
-    isRead: row['read_at'] != null,
-    routePath: (row['route_path'] as String?) ?? '/home',
+    isRead: row['is_read'] == true,
+    data: row['data'] is Map
+        ? Map<String, dynamic>.from(row['data'] as Map)
+        : const {},
   );
 }
 
@@ -238,7 +254,12 @@ class InAppNotification {
   final String body;
   final String timeAgo;
   bool isRead;
-  final String routePath;
+  final Map<String, dynamic> data;
+
+  String? get dataRoute {
+    final route = data['route'] ?? data['route_path'];
+    return route is String && route.startsWith('/') ? route : null;
+  }
 
   InAppNotification({
     required this.id,
@@ -247,6 +268,6 @@ class InAppNotification {
     required this.body,
     required this.timeAgo,
     required this.isRead,
-    required this.routePath,
+    required this.data,
   });
 }

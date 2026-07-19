@@ -2,6 +2,19 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>GIDClientID</key>
+	<string>970180731986-3lvorp988fvlmc9i2nvboqpjko5b61sd.apps.googleusercontent.com</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.970180731986-3lvorp988fvlmc9i2nvboqpjko5b61sd</string>
+			</array>
+		</dict>
+	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
@@ -72,5 +85,9 @@
 	<string>Loverage uses your location to help you discover compatible matches nearby even when the app is in the background.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Loverage requires access to your camera to let you take and upload photos for your profile verification and verification badges.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Loverage uses your photo library so you can choose photos for your profile.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Loverage can save profile photos to your photo library when you request it.</string>
 </dict>
 </plist>

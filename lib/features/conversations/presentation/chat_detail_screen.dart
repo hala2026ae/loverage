@@ -55,6 +55,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       final partner = await _repository.conversationPartner(
         widget.conversationId,
       );
+      await _repository.markConversationMessagesSeen(widget.conversationId);
       final rows = await _repository.messages(widget.conversationId);
       if (!mounted) return;
       setState(() {
@@ -90,6 +91,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       senderId: Supabase.instance.client.auth.currentUser?.id ?? 'me',
       content: text,
       timestamp: 'Just now',
+      deliveredAt: null,
+      readAt: null,
     );
 
     setState(() => _messages.add(optimistic));
@@ -102,6 +105,20 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _messages.removeWhere((m) => m.id == optimistic.id));
+      if (e is DailyActionLimitException) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              'Daily chat limit reached. Upgrade or wait for the refill.',
+            ),
+            action: SnackBarAction(
+              label: 'Upgrade',
+              onPressed: () => context.push('/paywall'),
+            ),
+          ),
+        );
+        return;
+      }
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Could not send message: $e')));
@@ -417,18 +434,34 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
               ),
             ),
             const SizedBox(height: 5.0),
-            Align(
-              alignment: Alignment.bottomRight,
-              child: Text(
-                msg.timestamp,
-                style: TextStyle(
-                  color: isMe
-                      ? AppColors.primaryDarkBurgundy.withOpacity(0.6)
-                      : AppColors.textMuted,
-                  fontSize: 10.0,
-                  fontWeight: FontWeight.w500,
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  msg.timestamp,
+                  style: TextStyle(
+                    color: isMe
+                        ? AppColors.primaryDarkBurgundy.withOpacity(0.55)
+                        : AppColors.textMuted,
+                    fontSize: 10.0,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
-              ),
+                if (isMe) ...[
+                  const SizedBox(width: 7),
+                  Icon(msg.statusIcon, size: 12, color: msg.statusColor),
+                  const SizedBox(width: 3),
+                  Text(
+                    msg.statusLabel,
+                    style: TextStyle(
+                      color: msg.statusColor,
+                      fontSize: 10.0,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ],
             ),
           ],
         ),
@@ -479,13 +512,36 @@ class ChatMessage {
   final String senderId;
   final String content;
   final String timestamp;
+  final DateTime? deliveredAt;
+  final DateTime? readAt;
 
   ChatMessage({
     required this.id,
     required this.senderId,
     required this.content,
     required this.timestamp,
+    required this.deliveredAt,
+    required this.readAt,
   });
+
+  String get statusLabel {
+    if (readAt != null) return 'Seen';
+    if (deliveredAt != null) return 'Delivered';
+    return 'Sent';
+  }
+
+  IconData get statusIcon {
+    if (readAt != null) return Icons.done_all_rounded;
+    if (deliveredAt != null) return Icons.done_all_rounded;
+    return Icons.done_rounded;
+  }
+
+  Color get statusColor {
+    if (readAt != null) return AppColors.primaryBurgundy;
+    if (deliveredAt != null)
+      return AppColors.primaryDarkBurgundy.withOpacity(0.62);
+    return AppColors.primaryDarkBurgundy.withOpacity(0.50);
+  }
 }
 
 _ChatPartner _partnerFromRow(Map<String, dynamic>? row) {
@@ -512,6 +568,8 @@ ChatMessage _messageFromRow(Map<String, dynamic> row) {
     timestamp: _timeAgo(
       DateTime.tryParse((row['created_at'] ?? '').toString()),
     ),
+    deliveredAt: DateTime.tryParse((row['delivered_at'] ?? '').toString()),
+    readAt: DateTime.tryParse((row['read_at'] ?? '').toString()),
   );
 }
 

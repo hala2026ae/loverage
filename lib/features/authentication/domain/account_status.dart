@@ -1,4 +1,5 @@
 enum AccountStatus {
+  initializing,
   unauthenticated,
   emailUnverified,
   registrationIncomplete,
@@ -14,5 +15,7 @@ enum AccountStatus {
   bool get isPendingReview => this == AccountStatus.verificationPending;
   bool get isRejected => this == AccountStatus.verificationRejected;
   bool get isSuspended => this == AccountStatus.suspended;
-  bool get isDeactivated => this == AccountStatus.deactivated || this == AccountStatus.deletionScheduled;
+  bool get isDeactivated =>
+      this == AccountStatus.deactivated ||
+      this == AccountStatus.deletionScheduled;
 }

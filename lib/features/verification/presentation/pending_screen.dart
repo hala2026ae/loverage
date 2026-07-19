@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import '../../../app/theme/app_theme.dart';
 import '../../authentication/domain/auth_repository_interface.dart';
 
@@ -32,17 +31,17 @@ class VerificationPendingScreen extends ConsumerWidget {
                 ),
               ),
               const SizedBox(height: 32.0),
-              
+
               Text(
                 'Your profile is being reviewed',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                      color: AppColors.primaryBurgundy,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  color: AppColors.primaryBurgundy,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
               const SizedBox(height: 16.0),
-              
+
               const Text(
                 'Our team is reviewing your details and face verification video. Your profile will remain private until approved. We will notify you via email/push when the review is complete.',
                 textAlign: TextAlign.center,
@@ -54,12 +53,15 @@ class VerificationPendingScreen extends ConsumerWidget {
               ),
               const SizedBox(height: 48.0),
 
-              // Actions
               OutlinedButton.icon(
                 onPressed: () {
                   // Simulate support contact
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Support ticket raised. We reply in 2-4 hours.')),
+                    const SnackBar(
+                      content: Text(
+                        'Support ticket raised. We reply in 2-4 hours.',
+                      ),
+                    ),
                   );
                 },
                 icon: const Icon(Icons.support_agent_outlined),

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../app/theme/app_theme.dart';
 import '../../../core/data/loverage_repository.dart';
+import '../../authentication/domain/account_status.dart';
+import '../../verification/presentation/verification_pending_banner.dart';
+import '../../../app/router/app_router.dart';
 
 class KnocksTab extends ConsumerStatefulWidget {
   const KnocksTab({super.key});
@@ -62,6 +64,88 @@ class _KnocksTabState extends ConsumerState<KnocksTab>
 
   @override
   Widget build(BuildContext context) {
+    final authStatus = ref.watch(authStatusProvider).valueOrNull;
+    final isPendingReview = authStatus == AccountStatus.verificationPending;
+
+    if (isPendingReview) {
+      return Scaffold(
+        backgroundColor: AppColors.backgroundLight,
+        appBar: AppBar(
+          flexibleSpace: Container(
+            decoration: const BoxDecoration(
+              gradient: AppColors.primaryGradient,
+            ),
+          ),
+          title: Text(
+            'Knocks',
+            style: AppTheme.sansText(
+              fontSize: 16.0,
+              weight: FontWeight.w300,
+              color: Colors.white.withOpacity(0.9),
+            ).copyWith(letterSpacing: 0.5),
+          ),
+          centerTitle: false,
+          elevation: 0,
+        ),
+        body: Container(
+          decoration: const BoxDecoration(
+            image: DecorationImage(
+              image: AssetImage('Assets/home background .png'),
+              fit: BoxFit.cover,
+            ),
+          ),
+          child: Column(
+            children: [
+              const VerificationPendingBanner(),
+              Expanded(
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 80,
+                        height: 80,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFD4AF37).withOpacity(0.07),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.hourglass_empty_rounded,
+                          size: 40,
+                          color: Color(0xFFD4AF37),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      const Text(
+                        'Review in progress',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 17,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 32.0),
+                        child: Text(
+                          'Your Account is under review will be active soon.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: AppColors.textSecondary,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: AppColors.backgroundLight,
       appBar: AppBar(
@@ -365,20 +449,13 @@ class _KnockList extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                color: AppColors.primaryBurgundy.withOpacity(0.07),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.favorite_border_rounded,
-                size: 40,
-                color: AppColors.primaryBurgundy,
-              ),
+            Image.asset(
+              'Assets/empty knocks1 (1) (1).png',
+              width: 150,
+              height: 150,
+              fit: BoxFit.contain,
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 14),
             const Text(
               'No knocks yet',
               style: TextStyle(

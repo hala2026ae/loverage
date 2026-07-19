@@ -17,16 +17,23 @@ abstract class AuthRepositoryInterface {
     required String password,
   });
 
+  Future<void> signInWithGoogle();
+
+  Future<void> signInWithApple();
+
   Future<void> signOut();
 
   Future<void> sendPasswordResetEmail(String email);
+
+  Future<void> verifyPasswordResetOtp({
+    required String email,
+    required String otp,
+  });
 
   Future<void> confirmPasswordReset({
     required String token,
     required String newPassword,
   });
-
-  Future<void> verifyEmail();
 
   Future<void> updateRegistrationProgress({
     required String name,
@@ -38,6 +45,7 @@ abstract class AuthRepositoryInterface {
     required double longitude,
     required String city,
     required String countryCode,
+    required List<String> images,
   });
 
   Future<void> submitFaceVerification(String videoPath);
@@ -47,8 +55,6 @@ abstract class AuthRepositoryInterface {
     required String locale,
     required String appVersion,
   });
-
-  Future<void> resendVerificationEmail();
 }
 
 final authRepositoryProvider = Provider<AuthRepositoryInterface>((ref) {

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:video_player/video_player.dart';
 import '../../../app/theme/app_theme.dart';
 
 class AdminDashboard extends StatefulWidget {
@@ -24,67 +26,168 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
   Future<void> _loadAdminData() async {
     setState(() => _isLoading = true);
-    await Future.delayed(const Duration(milliseconds: 500));
+    
+    try {
+      final supabase = Supabase.instance.client;
+      final response = await supabase
+          .from('verification_submissions')
+          .select('id, user_id, video_storage_path, status, created_at, profiles(public_name, age, profile_photos(public_url, is_primary))')
+          .eq('status', 'pending')
+          .order('created_at', ascending: false);
 
-    setState(() {
-      _verifications = [
-        VerificationTask(
-          id: 'v1',
-          userName: 'Abdul',
-          userAge: 29,
-          submittedAt: '10 mins ago',
-          videoUrl: 'https://placeholder.supabase.co/verification_videos/abdul.mp4',
-          mainPhotoUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=500',
-        ),
-        VerificationTask(
-          id: 'v2',
-          userName: 'Ahmed',
-          userAge: 32,
-          submittedAt: '1 hour ago',
-          videoUrl: 'https://placeholder.supabase.co/verification_videos/ahmed.mp4',
-          mainPhotoUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=500',
-        ),
-      ];
+      final List<VerificationTask> tasks = [];
+      for (final row in (response as List)) {
+        final id = row['id']?.toString() ?? '';
+        final userId = row['user_id']?.toString() ?? '';
+        final videoUrl = row['video_storage_path']?.toString() ?? '';
+        final profilesMap = row['profiles'] as Map<String, dynamic>?;
+        
+        final userName = profilesMap?['public_name']?.toString() ?? 'Unknown';
+        final userAge = int.tryParse(profilesMap?['age']?.toString() ?? '') ?? 0;
+        
+        String mainPhotoUrl = '';
+        final photosList = profilesMap?['profile_photos'] as List?;
+        if (photosList != null && photosList.isNotEmpty) {
+          final primaryPhoto = photosList.firstWhere(
+            (p) => p['is_primary'] == true,
+            orElse: () => photosList.first,
+          );
+          mainPhotoUrl = primaryPhoto['public_url']?.toString() ?? '';
+        }
+        
+        if (mainPhotoUrl.isEmpty) {
+          mainPhotoUrl = 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400';
+        }
+        
+        String submittedAt = 'Just now';
+        final createdAtStr = row['created_at']?.toString();
+        if (createdAtStr != null) {
+          final createdAt = DateTime.tryParse(createdAtStr);
+          if (createdAt != null) {
+            final diff = DateTime.now().difference(createdAt);
+            if (diff.inMinutes < 60) {
+              submittedAt = '${diff.inMinutes} mins ago';
+            } else if (diff.inHours < 24) {
+              submittedAt = '${diff.inHours} hours ago';
+            } else {
+              submittedAt = '${diff.inDays} days ago';
+            }
+          }
+        }
+        
+        tasks.add(
+          VerificationTask(
+            id: id,
+            userId: userId,
+            userName: userName,
+            userAge: userAge,
+            submittedAt: submittedAt,
+            videoUrl: videoUrl,
+            mainPhotoUrl: mainPhotoUrl,
+          ),
+        );
+      }
 
-      _reports = [
-        ReportTask(
-          id: 'r1',
-          reporterName: 'Victoria',
-          reportedName: 'John',
-          reason: 'Scam or asking for money',
-          description: 'User repeatedly sent messages asking for financial help to travel.',
-          time: '3 hours ago',
-        ),
-      ];
+      setState(() {
+        _verifications = tasks;
+        _reports = [
+          ReportTask(
+            id: 'r1',
+            reporterName: 'Victoria',
+            reportedName: 'John',
+            reason: 'Scam or asking for money',
+            description: 'User repeatedly sent messages asking for financial help to travel.',
+            time: '3 hours ago',
+          ),
+        ];
 
-      _auditLogs = [
-        '[INFO] 10:15 AM - Admin approved profile ID: mock-user-991',
-        '[WARNING] 09:30 AM - Admin suspended user ID: mock-user-404 due to harassment',
-        '[INFO] 08:45 AM - Admin dismissed report on profile ID: mock-user-202',
-      ];
-
-      _isLoading = false;
-    });
+        _auditLogs = [
+          '[INFO] 10:15 AM - Admin approved profile ID: mock-user-991',
+          '[WARNING] 09:30 AM - Admin suspended user ID: mock-user-404 due to harassment',
+          '[INFO] 08:45 AM - Admin dismissed report on profile ID: mock-user-202',
+        ];
+        _isLoading = false;
+      });
+    } catch (e) {
+      print('Error loading admin verifications: $e');
+      setState(() => _isLoading = false);
+    }
   }
 
-  void _approveProfile(VerificationTask task) {
-    setState(() {
-      _verifications.removeWhere((v) => v.id == task.id);
-      _auditLogs.insert(0, '[INFO] ${DateTime.now().toString().substring(11, 16)} - Approved face verification for ${task.userName}');
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Profile ${task.userName} has been approved.'), backgroundColor: AppColors.success),
-    );
+  Future<void> _approveProfile(VerificationTask task) async {
+    try {
+      final supabase = Supabase.instance.client;
+      
+      // Update submission status to approved
+      await supabase
+          .from('verification_submissions')
+          .update({'status': 'approved'})
+          .eq('id', task.id);
+
+      // Update user profile status to active & verified
+      await supabase
+          .from('profiles')
+          .update({
+            'verification_status': 'approved',
+            'profile_status': 'active',
+          })
+          .eq('id', task.userId);
+
+      setState(() {
+        _verifications.removeWhere((v) => v.id == task.id);
+        _auditLogs.insert(0, '[INFO] ${DateTime.now().toString().substring(11, 16)} - Approved face verification for ${task.userName}');
+      });
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Profile ${task.userName} has been approved.'), backgroundColor: AppColors.success),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to approve profile: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    }
   }
 
-  void _rejectProfile(VerificationTask task, String reason) {
-    setState(() {
-      _verifications.removeWhere((v) => v.id == task.id);
-      _auditLogs.insert(0, '[REJECT] ${DateTime.now().toString().substring(11, 16)} - Rejected verification for ${task.userName}. Reason: $reason');
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Profile ${task.userName} rejected: $reason'), backgroundColor: AppColors.error),
-    );
+  Future<void> _rejectProfile(VerificationTask task, String reason) async {
+    try {
+      final supabase = Supabase.instance.client;
+
+      // Update submission status to rejected
+      await supabase
+          .from('verification_submissions')
+          .update({'status': 'rejected'})
+          .eq('id', task.id);
+
+      // Update user profile status to verification rejected
+      await supabase
+          .from('profiles')
+          .update({
+            'verification_status': 'rejected',
+            'profile_status': 'verification_rejected',
+          })
+          .eq('id', task.userId);
+
+      setState(() {
+        _verifications.removeWhere((v) => v.id == task.id);
+        _auditLogs.insert(0, '[REJECT] ${DateTime.now().toString().substring(11, 16)} - Rejected verification for ${task.userName}. Reason: $reason');
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Profile ${task.userName} rejected: $reason'), backgroundColor: AppColors.error),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to reject profile: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    }
   }
 
   void _suspendUser(ReportTask report) {
@@ -229,8 +332,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
                             const SizedBox(height: 8.0),
                             TextButton.icon(
                               onPressed: () {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('Playing 5-second verification video u...')),
+                                showDialog(
+                                  context: context,
+                                  builder: (context) => VideoPlayerDialog(videoUrl: task.videoUrl),
                                 );
                               },
                               icon: const Icon(Icons.play_circle_fill_rounded, color: AppColors.primaryBurgundy),
@@ -420,6 +524,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
 class VerificationTask {
   final String id;
+  final String userId;
   final String userName;
   final int userAge;
   final String submittedAt;
@@ -428,6 +533,7 @@ class VerificationTask {
 
   VerificationTask({
     required this.id,
+    required this.userId,
     required this.userName,
     required this.userAge,
     required this.submittedAt,
@@ -452,4 +558,96 @@ class ReportTask {
     required this.description,
     required this.time,
   });
+}
+
+class VideoPlayerDialog extends StatefulWidget {
+  final String videoUrl;
+
+  const VideoPlayerDialog({super.key, required this.videoUrl});
+
+  @override
+  State<VideoPlayerDialog> createState() => _VideoPlayerDialogState();
+}
+
+class _VideoPlayerDialogState extends State<VideoPlayerDialog> {
+  late VideoPlayerController _controller;
+  bool _initialized = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl))
+      ..initialize().then((_) {
+        setState(() => _initialized = true);
+        _controller.play();
+        _controller.setLooping(true);
+      }).catchError((e) {
+        setState(() => _error = e.toString());
+      });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: Colors.black,
+      contentPadding: EdgeInsets.zero,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      content: AspectRatio(
+        aspectRatio: _initialized ? _controller.value.aspectRatio : 9 / 16,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            if (_initialized)
+              VideoPlayer(_controller)
+            else if (_error != null)
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Text(
+                  'Error loading video: $_error',
+                  style: const TextStyle(color: Colors.white),
+                  textAlign: TextAlign.center,
+                ),
+              )
+            else
+              const CircularProgressIndicator(color: Colors.white),
+            Positioned(
+              top: 10,
+              right: 10,
+              child: IconButton(
+                icon: const Icon(Icons.close_rounded, color: Colors.white, size: 28),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
+            if (_initialized)
+              Positioned(
+                bottom: 10,
+                child: IconButton(
+                  icon: Icon(
+                    _controller.value.isPlaying
+                        ? Icons.pause_circle_filled_rounded
+                        : Icons.play_circle_filled_rounded,
+                    color: Colors.white,
+                    size: 56,
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      _controller.value.isPlaying
+                          ? _controller.pause()
+                          : _controller.play();
+                    });
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }

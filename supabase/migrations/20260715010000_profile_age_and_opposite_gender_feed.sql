@@ -1,0 +1,4 @@
+-- Placeholder migration.
+-- The profile age/opposite-gender feed changes are already represented in the
+-- current app schema. This file intentionally contains no SQL so migration
+-- ordering remains valid.

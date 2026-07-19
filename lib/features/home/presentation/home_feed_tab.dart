@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,6 +7,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../app/theme/app_theme.dart';
 import '../../filters/presentation/filter_dialog.dart';
 import '../../../core/data/loverage_repository.dart';
+import '../../authentication/domain/account_status.dart';
+import '../../verification/presentation/verification_pending_banner.dart';
+import '../../../app/router/app_router.dart';
 
 class HomeFeedTab extends ConsumerStatefulWidget {
   const HomeFeedTab({super.key});
@@ -17,9 +21,17 @@ class HomeFeedTab extends ConsumerStatefulWidget {
 class _HomeFeedTabState extends ConsumerState<HomeFeedTab>
     with TickerProviderStateMixin {
   bool _isLoading = false;
+  bool _isLoadingMore = false;
+  bool _hasMore = true;
+  int _page = 0;
+  int _feedRequest = 0;
+  static const _pageSize = 12;
   int _selectedFilter = 0;
   final List<String> _filterLabels = ['All', 'Nearby', 'New', 'Online'];
   List<FeedProfile> _profiles = [];
+  List<String> _knockedProfileIds = [];
+  List<String> _messagedProfileIds = [];
+  final _scrollController = ScrollController();
 
   late final AnimationController _shimmerCtrl;
 
@@ -30,34 +42,71 @@ class _HomeFeedTabState extends ConsumerState<HomeFeedTab>
       vsync: this,
       duration: const Duration(milliseconds: 1500),
     )..repeat();
-    _loadFeed();
+    _scrollController.addListener(_handleScroll);
+    _loadFeed(reset: true);
   }
 
   @override
   void dispose() {
     _shimmerCtrl.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
   LoverageRepository get _repository =>
       LoverageRepository(Supabase.instance.client);
 
-  Future<void> _loadFeed() async {
-    setState(() => _isLoading = true);
+  void _handleScroll() {
+    if (_scrollController.position.extentAfter < 700) {
+      _loadFeed();
+    }
+  }
+
+  Future<void> _loadFeed({bool reset = false}) async {
+    if (reset) {
+      _feedRequest += 1;
+      _page = 0;
+      _hasMore = true;
+      setState(() {
+        _profiles = [];
+        _isLoading = true;
+        _isLoadingMore = false;
+      });
+    } else {
+      if (_isLoading || _isLoadingMore || !_hasMore) return;
+      setState(() => _isLoadingMore = true);
+    }
+    final request = _feedRequest;
     try {
       final rows = await _repository.feedProfiles(
         filter: _filterLabels[_selectedFilter],
+        page: _page,
+        pageSize: _pageSize,
       );
-      if (!mounted) return;
+      final interactions = await _repository.feedInteractionStatuses();
+      if (!mounted || request != _feedRequest) return;
+      final loaded = rows.map(_profileFromRow).toList();
       setState(() {
-        _profiles = rows.map(_profileFromRow).toList();
+        final ids = _profiles.map((profile) => profile.id).toSet();
+        _profiles.addAll(loaded.where((profile) => ids.add(profile.id)));
+        _knockedProfileIds = interactions['knocked'] ?? [];
+        _messagedProfileIds = interactions['chat_requested'] ?? [];
+        _page += 1;
+        _hasMore = rows.length == _pageSize;
         _isLoading = false;
+        _isLoadingMore = false;
       });
+      for (final profile in loaded.take(6)) {
+        precacheImage(CachedNetworkImageProvider(profile.imageUrl), context);
+      }
+      Future.wait(
+        loaded.take(4).map((profile) => _repository.profile(profile.id)),
+      ).ignore();
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _profiles = [];
         _isLoading = false;
+        _isLoadingMore = false;
       });
       ScaffoldMessenger.of(
         context,
@@ -71,11 +120,13 @@ class _HomeFeedTabState extends ConsumerState<HomeFeedTab>
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => const FilterDialog(),
-    ).then((_) => _loadFeed());
+    ).then((_) => _loadFeed(reset: true));
   }
 
   @override
   Widget build(BuildContext context) {
+    final authStatus = ref.watch(authStatusProvider).valueOrNull;
+    final isPendingReview = authStatus == AccountStatus.verificationPending;
     return Scaffold(
       backgroundColor: AppColors.backgroundLight,
       body: Container(
@@ -86,6 +137,7 @@ class _HomeFeedTabState extends ConsumerState<HomeFeedTab>
           ),
         ),
         child: CustomScrollView(
+          controller: _scrollController,
           slivers: [
             // ── App Bar ──────────────────────────────────────────────────────
             SliverAppBar(
@@ -154,6 +206,9 @@ class _HomeFeedTabState extends ConsumerState<HomeFeedTab>
               ],
             ),
 
+            if (isPendingReview)
+              const SliverToBoxAdapter(child: VerificationPendingBanner()),
+
             // ── Filter Chips ────────────────────────────────────────────────
             SliverToBoxAdapter(
               child: Container(
@@ -172,7 +227,7 @@ class _HomeFeedTabState extends ConsumerState<HomeFeedTab>
                       return GestureDetector(
                         onTap: () {
                           setState(() => _selectedFilter = i);
-                          _loadFeed();
+                          _loadFeed(reset: true);
                         },
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 200),
@@ -273,9 +328,22 @@ class _HomeFeedTabState extends ConsumerState<HomeFeedTab>
                       (context, index) {
                         final profileIndex = chunkIndex * 8 + index;
                         final profile = _profiles[profileIndex];
+                        final isKnocked = _knockedProfileIds.contains(
+                          profile.id,
+                        );
+                        final isMessaged = _messagedProfileIds.contains(
+                          profile.id,
+                        );
                         return _ProfileGridCard(
+                          key: ValueKey(
+                            '${profile.id}_${isKnocked}_${isMessaged}',
+                          ),
                           profile: profile,
-                          onTap: () => context.push('/profile/${profile.id}'),
+                          initialKnocked: isKnocked,
+                          initialMessaged: isMessaged,
+                          onTap: () => context.push(
+                            '/profile/${profile.id}?knocked=$isKnocked&messaged=$isMessaged',
+                          ),
                           onKnock: () => _sendKnock(profile),
                           onMessage: () => _openConversation(profile),
                         );
@@ -289,6 +357,23 @@ class _HomeFeedTabState extends ConsumerState<HomeFeedTab>
                 if (chunkIndex * 8 + 8 <= _profiles.length)
                   const SliverToBoxAdapter(child: _AdMobBannerCard()),
               ],
+              if (_isLoadingMore)
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 110),
+                  sliver: SliverGrid(
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          mainAxisSpacing: 16,
+                          crossAxisSpacing: 16,
+                          childAspectRatio: 0.61,
+                        ),
+                    delegate: SliverChildBuilderDelegate(
+                      (_, __) => _ShimmerCard(ctrl: _shimmerCtrl),
+                      childCount: 2,
+                    ),
+                  ),
+                ),
               const SliverToBoxAdapter(child: SizedBox(height: 100)),
             ],
           ],
@@ -297,39 +382,119 @@ class _HomeFeedTabState extends ConsumerState<HomeFeedTab>
     );
   }
 
-  Future<void> _sendKnock(FeedProfile profile) async {
+  Future<bool> _sendKnock(FeedProfile profile) async {
+    final authStatus = ref.read(authStatusProvider).valueOrNull;
+    if (authStatus?.isApproved != true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Your Account is under review will be active soon.'),
+          backgroundColor: Color(0xFFD4AF37),
+        ),
+      );
+      return false;
+    }
     try {
       await _repository.createKnock(profile.id);
-      if (!mounted) return;
+      if (!mounted) return false;
+      setState(() {
+        _knockedProfileIds.add(profile.id);
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Knock sent to ${profile.name}'),
-          backgroundColor: AppColors.success,
+          content: _BrandedKnockSentToast(name: profile.name),
+          backgroundColor: Colors.transparent,
+          elevation: 0,
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          margin: const EdgeInsets.all(16),
+          padding: EdgeInsets.zero,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      return true;
+    } catch (e) {
+      if (!mounted) return false;
+      if (e is DailyActionLimitException) {
+        _showDailyLimitSheet(e);
+        return false;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not send knock: $e')));
+      return false;
+    }
+  }
+
+  Future<bool> _openConversation(FeedProfile profile) async {
+    final authStatus = ref.read(authStatusProvider).valueOrNull;
+    if (authStatus?.isApproved != true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Your Account is under review will be active soon.'),
+          backgroundColor: Color(0xFFD4AF37),
+        ),
+      );
+      return false;
+    }
+    final sent = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withOpacity(0.45),
+      builder: (sheetContext) => _QuickMessageSheet(
+        profile: profile,
+        onSend: (message) => _sendQuickMessage(profile, message),
+      ),
+    );
+    return sent ?? false;
+  }
+
+  Future<void> _sendQuickMessage(FeedProfile profile, String message) async {
+    try {
+      await _repository.createChatRequest(profile.id, message);
+      if (!mounted) return;
+      setState(() {
+        _messagedProfileIds.add(profile.id);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: _BrandedMessageSentToast(name: profile.name),
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          behavior: SnackBarBehavior.floating,
+          padding: EdgeInsets.zero,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+          duration: const Duration(seconds: 3),
         ),
       );
     } catch (e) {
       if (!mounted) return;
+      if (e is DailyActionLimitException) {
+        _showDailyLimitSheet(e);
+        rethrow;
+      }
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Could not send knock: $e')));
+      ).showSnackBar(SnackBar(content: Text('Could not send message: $e')));
+      rethrow;
     }
   }
 
-  Future<void> _openConversation(FeedProfile profile) async {
-    try {
-      final id = await _repository.getOrCreateConversation(profile.id);
-      if (mounted) context.push('/chat/$id');
-    } catch (e) {
-      if (mounted)
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Could not open chat: $e')));
-    }
+  Future<void> _showDailyLimitSheet(DailyActionLimitException limit) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withOpacity(0.45),
+      builder: (sheetContext) => _DailyLimitSheet(
+        limit: limit,
+        onUpgrade: () {
+          Navigator.pop(sheetContext);
+          context.push('/paywall');
+        },
+      ),
+    );
   }
 }
 
@@ -338,11 +503,16 @@ class _HomeFeedTabState extends ConsumerState<HomeFeedTab>
 // ──────────────────────────────────────────────────────────────────────────────
 class _ProfileGridCard extends StatefulWidget {
   final FeedProfile profile;
+  final bool initialKnocked;
+  final bool initialMessaged;
   final VoidCallback onTap;
-  final VoidCallback onKnock;
-  final VoidCallback onMessage;
+  final Future<bool> Function() onKnock;
+  final Future<bool> Function() onMessage;
   const _ProfileGridCard({
+    super.key,
     required this.profile,
+    this.initialKnocked = false,
+    this.initialMessaged = false,
     required this.onTap,
     required this.onKnock,
     required this.onMessage,
@@ -353,17 +523,46 @@ class _ProfileGridCard extends StatefulWidget {
 }
 
 class _ProfileGridCardState extends State<_ProfileGridCard> {
-  bool _knocked = false;
+  late bool _knocked;
+  late bool _messaged;
+  bool _isOpeningMessage = false;
+  bool _isSendingKnock = false;
 
-  void _handleKnock() {
-    if (_knocked) return;
-    setState(() => _knocked = true);
-    widget.onKnock();
+  @override
+  void initState() {
+    super.initState();
+    _knocked = widget.initialKnocked;
+    _messaged = widget.initialMessaged;
+  }
+
+  Future<void> _handleKnock() async {
+    if (_knocked || _isSendingKnock) return;
+    setState(() => _isSendingKnock = true);
+    try {
+      final sent = await widget.onKnock();
+      if (mounted && sent) setState(() => _knocked = true);
+    } catch (_) {
+      // Knock failed (daily limit, etc.) — don't change state
+    } finally {
+      if (mounted) setState(() => _isSendingKnock = false);
+    }
+  }
+
+  Future<void> _handleMessage() async {
+    if (_messaged || _isOpeningMessage) return;
+    setState(() => _isOpeningMessage = true);
+    await Future<void>.delayed(const Duration(milliseconds: 90));
+    if (!mounted) return;
+    setState(() => _isOpeningMessage = false);
+    final sent = await widget.onMessage();
+    if (mounted && sent) setState(() => _messaged = true);
   }
 
   @override
   Widget build(BuildContext context) {
     final p = widget.profile;
+    final actionFontSize = MediaQuery.sizeOf(context).width < 360 ? 10.0 : 11.0;
+    final messageFontSize = _messaged ? actionFontSize - 1.0 : actionFontSize;
     return GestureDetector(
       onTap: widget.onTap,
       child: Container(
@@ -390,10 +589,13 @@ class _ProfileGridCardState extends State<_ProfileGridCard> {
             fit: StackFit.expand,
             children: [
               // Photo background occupying full bleed
-              Image.network(
-                p.imageUrl,
+              CachedNetworkImage(
+                imageUrl: p.imageUrl,
                 fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Container(
+                fadeInDuration: const Duration(milliseconds: 120),
+                placeholder: (_, __) =>
+                    const ColoredBox(color: Color(0xFFEDE6E2)),
+                errorWidget: (_, __, ___) => Container(
                   color: AppColors.cardCream,
                   child: const Icon(
                     Icons.person,
@@ -670,24 +872,32 @@ class _ProfileGridCardState extends State<_ProfileGridCard> {
                               height: 32,
                               decoration: BoxDecoration(
                                 gradient: _knocked
-                                    ? null
+                                    ? const LinearGradient(
+                                        begin: Alignment.topLeft,
+                                        end: Alignment.bottomRight,
+                                        colors: [
+                                          Color(0xFF6B0F2A),
+                                          Color(0xFF3D0717),
+                                        ],
+                                      )
                                     : AppColors.premiumBurgundyGradient,
-                                color: _knocked
-                                    ? AppColors.success.withOpacity(0.9)
-                                    : null,
                                 borderRadius: BorderRadius.circular(
                                   AppRadius.circular,
                                 ),
-                                border: _knocked
-                                    ? null
-                                    : Border.all(
-                                        color: const Color(0xFFD4956A),
-                                        width: 1.0,
-                                      ),
+                                border: Border.all(
+                                  color: _knocked
+                                      ? const Color(
+                                          0xFFE8B86D,
+                                        ).withOpacity(0.85)
+                                      : const Color(0xFFD4956A),
+                                  width: 1.0,
+                                ),
                                 boxShadow: [
                                   BoxShadow(
                                     color: _knocked
-                                        ? Colors.black.withOpacity(0.12)
+                                        ? const Color(
+                                            0xFF2E0713,
+                                          ).withOpacity(0.26)
                                         : const Color(
                                             0xFF380512,
                                           ).withOpacity(0.35),
@@ -697,16 +907,33 @@ class _ProfileGridCardState extends State<_ProfileGridCard> {
                                 ],
                               ),
                               alignment: Alignment.center,
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  _knocked
-                                      ? const Icon(
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                ),
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    crossAxisAlignment: CrossAxisAlignment.center,
+                                    children: [
+                                      if (_isSendingKnock)
+                                        const SizedBox(
+                                          width: 13,
+                                          height: 13,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 1.8,
+                                            color: Color(0xFFF7D5C4),
+                                          ),
+                                        )
+                                      else if (_knocked)
+                                        const Icon(
                                           Icons.check_circle_rounded,
                                           size: 13,
-                                          color: Colors.white,
+                                          color: Color(0xFFE8B86D),
                                         )
-                                      : SvgPicture.asset(
+                                      else
+                                        SvgPicture.asset(
                                           'Assets/knock new .svg',
                                           width: 14,
                                           height: 14,
@@ -715,18 +942,24 @@ class _ProfileGridCardState extends State<_ProfileGridCard> {
                                             BlendMode.srcIn,
                                           ),
                                         ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    _knocked ? 'Sent' : 'Knock',
-                                    style: TextStyle(
-                                      color: _knocked
-                                          ? Colors.white
-                                          : const Color(0xFFF7D5C4),
-                                      fontSize: 11.0,
-                                      fontWeight: FontWeight.w800,
-                                    ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        _isSendingKnock
+                                            ? 'Sending'
+                                            : _knocked
+                                                ? 'Sent'
+                                                : 'Knock',
+                                        style: TextStyle(
+                                          color: _knocked
+                                              ? const Color(0xFFFFE8C8)
+                                              : const Color(0xFFF7D5C4),
+                                          fontSize: actionFontSize,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ],
+                                ),
                               ),
                             ),
                           ),
@@ -735,11 +968,14 @@ class _ProfileGridCardState extends State<_ProfileGridCard> {
                         // Chat (translucent floating pill action)
                         Expanded(
                           child: GestureDetector(
-                            onTap: widget.onMessage,
-                            child: Container(
+                            onTap: _handleMessage,
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 180),
                               height: 32,
                               decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.2),
+                                color: _messaged
+                                    ? const Color(0xFF6B0F2A).withOpacity(0.88)
+                                    : Colors.white.withOpacity(0.2),
                                 borderRadius: BorderRadius.circular(
                                   AppRadius.circular,
                                 ),
@@ -756,25 +992,54 @@ class _ProfileGridCardState extends State<_ProfileGridCard> {
                                 ],
                               ),
                               alignment: Alignment.center,
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Image.asset(
-                                    'Assets/Messages.png',
-                                    width: 13,
-                                    height: 13,
-                                    color: Colors.white,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                ),
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    crossAxisAlignment: CrossAxisAlignment.center,
+                                    children: [
+                                      if (_isOpeningMessage)
+                                        const SizedBox(
+                                          width: 13,
+                                          height: 13,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 1.8,
+                                            color: Colors.white,
+                                          ),
+                                        )
+                                      else if (_messaged)
+                                        const Icon(
+                                          Icons.check_circle_rounded,
+                                          size: 12,
+                                          color: Color(0xFFE8B86D),
+                                        )
+                                      else
+                                        Image.asset(
+                                          'Assets/Messages.png',
+                                          width: 13,
+                                          height: 13,
+                                          color: Colors.white,
+                                        ),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        _isOpeningMessage
+                                            ? 'Opening'
+                                            : _messaged
+                                                ? 'Messaged'
+                                                : 'Message',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: messageFontSize,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                  const SizedBox(width: 4),
-                                  const Text(
-                                    'Chat',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 11.0,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                ],
+                                ),
                               ),
                             ),
                           ),
@@ -994,6 +1259,611 @@ String _timeAgo(DateTime? value) {
   if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
   if (diff.inHours < 24) return '${diff.inHours}h ago';
   return '${diff.inDays}d ago';
+}
+
+class _BrandedKnockSentToast extends StatelessWidget {
+  final String name;
+
+  const _BrandedKnockSentToast({required this.name});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+    decoration: BoxDecoration(
+      gradient: const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [Color(0xFF7A1230), Color(0xFF4D0A1E)],
+      ),
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: const Color(0xFFE8B86D).withOpacity(0.72)),
+      boxShadow: [
+        BoxShadow(
+          color: const Color(0xFF2A0611).withOpacity(0.30),
+          blurRadius: 22,
+          spreadRadius: -4,
+          offset: const Offset(0, 12),
+        ),
+      ],
+    ),
+    child: Row(
+      children: [
+        Container(
+          width: 24,
+          height: 24,
+          decoration: BoxDecoration(
+            color: const Color(0xFFE8B86D).withOpacity(0.18),
+            shape: BoxShape.circle,
+            border: Border.all(color: const Color(0xFFE8B86D)),
+          ),
+          child: const Icon(
+            Icons.check_rounded,
+            color: Color(0xFFFFE8C8),
+            size: 15,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            'Knock sent to $name',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFFFFF2E2),
+              fontSize: 14.5,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _BrandedMessageSentToast extends StatelessWidget {
+  final String name;
+
+  const _BrandedMessageSentToast({required this.name});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+    decoration: BoxDecoration(
+      gradient: const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [Color(0xFF7A1230), Color(0xFF4D0A1E)],
+      ),
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: const Color(0xFFE8B86D).withOpacity(0.72)),
+      boxShadow: [
+        BoxShadow(
+          color: const Color(0xFF2A0611).withOpacity(0.30),
+          blurRadius: 22,
+          spreadRadius: -4,
+          offset: const Offset(0, 12),
+        ),
+      ],
+    ),
+    child: Row(
+      children: [
+        Container(
+          width: 24,
+          height: 24,
+          decoration: BoxDecoration(
+            color: const Color(0xFFE8B86D).withOpacity(0.18),
+            shape: BoxShape.circle,
+            border: Border.all(color: const Color(0xFFE8B86D)),
+          ),
+          child: const Icon(
+            Icons.send_rounded,
+            color: Color(0xFFFFE8C8),
+            size: 13,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            'Message request sent to $name',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFFFFF2E2),
+              fontSize: 14.5,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _QuickMessageSheet extends StatefulWidget {
+  final FeedProfile profile;
+  final Future<void> Function(String message) onSend;
+
+  const _QuickMessageSheet({required this.profile, required this.onSend});
+
+  @override
+  State<_QuickMessageSheet> createState() => _QuickMessageSheetState();
+}
+
+class _QuickMessageSheetState extends State<_QuickMessageSheet> {
+  static const _maxLength = 300;
+  final _controller = TextEditingController();
+  bool _isSending = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty || _isSending) return;
+
+    setState(() => _isSending = true);
+    try {
+      await widget.onSend(text);
+      if (mounted) Navigator.pop(context, true);
+    } catch (_) {
+      if (mounted) setState(() => _isSending = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    final remaining = _maxLength - _controller.text.length;
+
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: DraggableScrollableSheet(
+        initialChildSize: 0.58,
+        minChildSize: 0.42,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (context, scrollController) => Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFFFFFAF8),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          ),
+          child: SingleChildScrollView(
+            controller: scrollController,
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 42,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD8C9C5),
+                      borderRadius: BorderRadius.circular(99),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Container(
+                      width: 54,
+                      height: 54,
+                      padding: const EdgeInsets.all(2.5),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(17),
+                        border: Border.all(
+                          color: const Color(0xFFE8B86D),
+                          width: 1.2,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF34121D).withOpacity(0.14),
+                            blurRadius: 16,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(13),
+                        child: CachedNetworkImage(
+                          imageUrl: widget.profile.imageUrl,
+                          fit: BoxFit.cover,
+                          fadeInDuration: const Duration(milliseconds: 100),
+                          placeholder: (_, __) =>
+                              const ColoredBox(color: Color(0xFFF1E7E3)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Message ${widget.profile.name}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 19,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${widget.profile.city}, ${widget.profile.country}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.textMuted,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: _isSending
+                          ? null
+                          : () => Navigator.pop(context),
+                      icon: const Icon(Icons.close_rounded),
+                      color: AppColors.primaryBurgundy,
+                      tooltip: 'Close',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: const Color(0xFFE9D8D2)),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF34121D).withOpacity(0.10),
+                        blurRadius: 28,
+                        spreadRadius: -10,
+                        offset: const Offset(0, 14),
+                      ),
+                    ],
+                  ),
+                  child: TextField(
+                    controller: _controller,
+                    maxLength: _maxLength,
+                    minLines: 5,
+                    maxLines: 8,
+                    autofocus: true,
+                    onChanged: (_) => setState(() {}),
+                    textInputAction: TextInputAction.newline,
+                    decoration: const InputDecoration(
+                      hintText: 'Write a thoughtful message...',
+                      counterText: '',
+                      border: InputBorder.none,
+                      contentPadding: EdgeInsets.fromLTRB(16, 15, 16, 15),
+                    ),
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 15,
+                      height: 1.4,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Image.asset(
+                      'Assets/Messages.png',
+                      width: 15,
+                      height: 15,
+                      color: AppColors.primaryBurgundy,
+                    ),
+                    const SizedBox(width: 6),
+                    const Expanded(
+                      child: Text(
+                        'Sends as a request first',
+                        style: TextStyle(
+                          color: AppColors.textMuted,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '$remaining',
+                      style: TextStyle(
+                        color: remaining < 80
+                            ? AppColors.error
+                            : AppColors.textMuted,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _isSending
+                            ? null
+                            : () => Navigator.pop(context),
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size.fromHeight(52),
+                          side: BorderSide(
+                            color: AppColors.primaryBurgundy.withOpacity(0.24),
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                        ),
+                        child: const Text(
+                          'Cancel',
+                          style: TextStyle(
+                            color: AppColors.primaryBurgundy,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: AnimatedBuilder(
+                        animation: _controller,
+                        builder: (context, _) {
+                          final enabled =
+                              _controller.text.trim().isNotEmpty && !_isSending;
+                          return GestureDetector(
+                            onTap: enabled ? _send : null,
+                            child: AnimatedOpacity(
+                              duration: const Duration(milliseconds: 160),
+                              opacity: enabled || _isSending ? 1 : 0.55,
+                              child: Container(
+                                height: 52,
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: [
+                                      Color(0xFF8B1234),
+                                      Color(0xFF520B20),
+                                    ],
+                                  ),
+                                  borderRadius: BorderRadius.circular(18),
+                                  border: Border.all(
+                                    color: const Color(0xFFE8B86D),
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: const Color(
+                                        0xFF520B20,
+                                      ).withOpacity(0.28),
+                                      blurRadius: 18,
+                                      offset: const Offset(0, 8),
+                                    ),
+                                  ],
+                                ),
+                                alignment: Alignment.center,
+                                child: _isSending
+                                    ? const SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Color(0xFFFFE8C8),
+                                        ),
+                                      )
+                                    : const Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          Icon(
+                                            Icons.send_rounded,
+                                            color: Color(0xFFFFE8C8),
+                                            size: 17,
+                                          ),
+                                          SizedBox(width: 8),
+                                          Text(
+                                            'Send Request',
+                                            style: TextStyle(
+                                              color: Color(0xFFFFE8C8),
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.w900,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DailyLimitSheet extends StatelessWidget {
+  final DailyActionLimitException limit;
+  final VoidCallback onUpgrade;
+
+  const _DailyLimitSheet({required this.limit, required this.onUpgrade});
+
+  @override
+  Widget build(BuildContext context) {
+    final title = limit.action == 'knock'
+        ? 'Daily knocks used'
+        : 'Daily chats used';
+    final body = limit.action == 'knock'
+        ? 'You used all ${limit.limit} knocks for today. Upgrade for unlimited actions or wait until your daily refill.'
+        : 'You used all ${limit.limit} chat requests for today. Upgrade for more access or wait until your daily refill.';
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 24),
+      decoration: const BoxDecoration(
+        color: Color(0xFFFFFAF8),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 42,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0xFFD8C9C5),
+                borderRadius: BorderRadius.circular(99),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Container(
+                width: 54,
+                height: 54,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFF8B1234), Color(0xFF520B20)],
+                  ),
+                  borderRadius: BorderRadius.circular(17),
+                  border: Border.all(color: const Color(0xFFE8B86D)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF520B20).withOpacity(0.28),
+                      blurRadius: 18,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.hourglass_top_rounded,
+                  color: Color(0xFFFFE8C8),
+                  size: 26,
+                ),
+              ),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${limit.sent}/${limit.limit} used',
+                      style: const TextStyle(
+                        color: AppColors.primaryBurgundy,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          Text(
+            body,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 14,
+              height: 1.45,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(context),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(52),
+                    side: BorderSide(
+                      color: AppColors.primaryBurgundy.withOpacity(0.24),
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                  ),
+                  child: const Text(
+                    'Wait',
+                    style: TextStyle(
+                      color: AppColors.primaryBurgundy,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 2,
+                child: GestureDetector(
+                  onTap: onUpgrade,
+                  child: Container(
+                    height: 52,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [Color(0xFF8B1234), Color(0xFF520B20)],
+                      ),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: const Color(0xFFE8B86D)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF520B20).withOpacity(0.28),
+                          blurRadius: 18,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    alignment: Alignment.center,
+                    child: const Text(
+                      'Upgrade Plan',
+                      style: TextStyle(
+                        color: Color(0xFFFFE8C8),
+                        fontSize: 15,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class FeedProfile {

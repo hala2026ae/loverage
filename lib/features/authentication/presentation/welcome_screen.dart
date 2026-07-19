@@ -17,15 +17,24 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen>
   late final AnimationController _slideCtrl;
   late final Animation<double> _fadeAnim;
   late final Animation<Offset> _slideAnim;
+  bool _isLoadingGoogle = false;
 
   @override
   void initState() {
     super.initState();
-    _fadeCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
-    _slideCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 800));
+    _fadeCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+    _slideCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
     _fadeAnim = CurvedAnimation(parent: _fadeCtrl, curve: Curves.easeOut);
-    _slideAnim = Tween<Offset>(begin: const Offset(0, 0.25), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _slideCtrl, curve: Curves.easeOutCubic));
+    _slideAnim = Tween<Offset>(
+      begin: const Offset(0, 0.25),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _slideCtrl, curve: Curves.easeOutCubic));
     Future.delayed(const Duration(milliseconds: 200), () {
       _fadeCtrl.forward();
       _slideCtrl.forward();
@@ -114,31 +123,28 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      SizedBox(height: size.height * 0.09),
+                      SizedBox(height: size.height * 0.07),
 
                       // ── Logo ────────────────────────────────────────────
                       _buildLogo(),
 
-                      SizedBox(height: size.height * 0.045),
+                      SizedBox(height: size.height * 0.035),
 
                       // ── Heading ─────────────────────────────────────────
                       Text(
                         'Where Serious\nLove Begins',
                         textAlign: TextAlign.center,
                         style: AppTheme.serifHeadline(
-                          fontSize: 40.0,
+                          fontSize: 38.0,
                           color: Colors.white,
-                        ).copyWith(
-                          letterSpacing: -0.5,
-                          height: 1.15,
-                        ),
+                        ).copyWith(letterSpacing: -0.5, height: 1.15),
                       ),
-                      const SizedBox(height: 16.0),
+                      const SizedBox(height: 14.0),
                       Text(
                         'A respectful platform for adults seeking\nmarriage and lasting commitment.',
                         textAlign: TextAlign.center,
                         style: AppTheme.sansText(
-                          fontSize: 16.0,
+                          fontSize: 15.5,
                           weight: FontWeight.w400,
                           color: Colors.white.withOpacity(0.65),
                           height: 1.6,
@@ -146,19 +152,6 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen>
                       ),
 
                       const Spacer(),
-
-                      // ── Pill Badges ─────────────────────────────────────
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          _buildBadge(Icons.verified_user_rounded, 'Verified Profiles'),
-                          const SizedBox(width: 10),
-                          _buildBadge(Icons.lock_rounded, 'Private & Safe'),
-                          const SizedBox(width: 10),
-                          _buildBadge(Icons.favorite_rounded, 'Serious Only'),
-                        ],
-                      ),
-                      const SizedBox(height: 36.0),
 
                       // ── CTA: Create Account ──────────────────────────────
                       _PrimaryGradientButton(
@@ -173,7 +166,9 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen>
                         child: Container(
                           height: 56,
                           decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(AppRadius.circular),
+                            borderRadius: BorderRadius.circular(
+                              AppRadius.circular,
+                            ),
                             border: Border.all(
                               color: Colors.white.withOpacity(0.25),
                               width: 1.5,
@@ -192,14 +187,20 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen>
                         ),
                       ),
 
-                      const SizedBox(height: 28.0),
+                      const SizedBox(height: 24.0),
 
                       // ── Social Divider ──────────────────────────────────
                       Row(
                         children: [
-                          Expanded(child: Divider(color: Colors.white.withOpacity(0.15))),
+                          Expanded(
+                            child: Divider(
+                              color: Colors.white.withOpacity(0.15),
+                            ),
+                          ),
                           Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16.0,
+                            ),
                             child: Text(
                               'or continue with',
                               style: TextStyle(
@@ -209,43 +210,60 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen>
                               ),
                             ),
                           ),
-                          Expanded(child: Divider(color: Colors.white.withOpacity(0.15))),
+                          Expanded(
+                            child: Divider(
+                              color: Colors.white.withOpacity(0.15),
+                            ),
+                          ),
                         ],
                       ),
-                      const SizedBox(height: 20.0),
+                      const SizedBox(height: 16.0),
 
-                      // ── Social Buttons ──────────────────────────────────
-                      Row(
+                      // ── Branded Social Buttons ──────────────────────────
+                      Column(
                         children: [
-                          Expanded(
-                            child: _SocialButton(
-                              icon: Icons.apple,
-                              label: 'Apple',
-                              onPressed: () async {
-                                try {
-                                  await authRepo.signInWithEmailAndPassword(
-                                    email: 'test.approved@loverage.com',
-                                    password: 'password123',
-                                  );
-                                } catch (_) {}
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 14.0),
-                          Expanded(
-                            child: _SocialButton(
-                              icon: Icons.g_mobiledata_rounded,
-                              label: 'Google',
-                              onPressed: () async {
-                                try {
-                                  await authRepo.signInWithEmailAndPassword(
-                                    email: 'test.approved@loverage.com',
-                                    password: 'password123',
-                                  );
-                                } catch (_) {}
-                              },
-                            ),
-                          ),
+                          _isLoadingGoogle
+                              ? const Center(
+                                  child: Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 14),
+                                    child: SizedBox(
+                                      width: 24,
+                                      height: 24,
+                                      child: CircularProgressIndicator(
+                                        color: AppColors.accentRoseGold,
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                              : _GoogleSignInButton(
+                                  onPressed: () async {
+                                    final messenger = ScaffoldMessenger.of(
+                                      context,
+                                    );
+                                    setState(() => _isLoadingGoogle = true);
+                                    try {
+                                      await authRepo.signInWithGoogle();
+                                    } catch (e) {
+                                      if (mounted) {
+                                        messenger.showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              'Google Sign-In failed: ${e.toString().replaceAll('Exception:', '')}',
+                                            ),
+                                            backgroundColor: AppColors.error,
+                                          ),
+                                        );
+                                      }
+                                    } finally {
+                                      if (mounted) {
+                                        setState(
+                                          () => _isLoadingGoogle = false,
+                                        );
+                                      }
+                                    }
+                                  },
+                                ),
                         ],
                       ),
 
@@ -274,72 +292,17 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen>
   }
 
   Widget _buildLogo() {
-    return Container(
-      width: 90,
-      height: 90,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: RadialGradient(
-          colors: [
-            AppColors.accentRoseGold.withOpacity(0.25),
-            AppColors.accentRoseGold.withOpacity(0.05),
-          ],
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Image.asset('Assets/couple rigns.png', height: 80, fit: BoxFit.contain),
+        const SizedBox(height: 14),
+        Image.asset(
+          'Assets/loverage text.png',
+          height: 30,
+          fit: BoxFit.contain,
         ),
-        border: Border.all(color: AppColors.accentRoseGold.withOpacity(0.4), width: 1.5),
-      ),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Positioned(
-            left: 22,
-            child: Container(
-              width: 30,
-              height: 30,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: AppColors.accentRoseGold, width: 2.5),
-              ),
-            ),
-          ),
-          Positioned(
-            right: 22,
-            child: Container(
-              width: 30,
-              height: 30,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: AppColors.accentGold, width: 2.5),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildBadge(IconData icon, String label) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.09),
-        borderRadius: BorderRadius.circular(AppRadius.circular),
-        border: Border.all(color: Colors.white.withOpacity(0.15)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 12, color: AppColors.accentRoseGold),
-          const SizedBox(width: 5),
-          Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 10.5,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
+      ],
     );
   }
 }
@@ -381,11 +344,9 @@ class _PrimaryGradientButton extends StatelessWidget {
   }
 }
 
-class _SocialButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
+class _GoogleSignInButton extends StatelessWidget {
   final VoidCallback onPressed;
-  const _SocialButton({required this.icon, required this.label, required this.onPressed});
+  const _GoogleSignInButton({required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
@@ -394,21 +355,28 @@ class _SocialButton extends StatelessWidget {
       child: Container(
         height: 52,
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.09),
+          color: Colors.white,
           borderRadius: BorderRadius.circular(AppRadius.circular),
-          border: Border.all(color: Colors.white.withOpacity(0.18)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
+            ),
+          ],
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, color: Colors.white, size: 22),
-            const SizedBox(width: 8),
-            Text(
-              label,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 14.5,
+            const GoogleLogo(),
+            const SizedBox(width: 10),
+            const Text(
+              'Sign in with Google',
+              style: TextStyle(
+                color: Color(0xFF1F1F1F),
+                fontSize: 15.0,
                 fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
               ),
             ),
           ],
@@ -416,4 +384,58 @@ class _SocialButton extends StatelessWidget {
       ),
     );
   }
+}
+
+class GoogleLogo extends StatelessWidget {
+  const GoogleLogo({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(size: const Size(18, 18), painter: _GoogleLogoPainter());
+  }
+}
+
+class _GoogleLogoPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double w = size.width;
+    final double h = size.height;
+    final double cx = w / 2;
+    final double cy = h / 2;
+    final double r = w / 2;
+    final rect = Rect.fromCircle(center: Offset(cx, cy), radius: r);
+
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = w * 0.22
+      ..strokeCap = StrokeCap.square;
+
+    // Red segment (Top)
+    paint.color = const Color(0xFFEA4335);
+    canvas.drawArc(rect, -2.35, 1.55, false, paint);
+
+    // Yellow segment (Left)
+    paint.color = const Color(0xFFFBBC05);
+    canvas.drawArc(rect, -3.9, 1.55, false, paint);
+
+    // Green segment (Bottom)
+    paint.color = const Color(0xFF34A853);
+    canvas.drawArc(rect, 0.8, 1.55, false, paint);
+
+    // Blue segment (Right)
+    paint.color = const Color(0xFF4285F4);
+    canvas.drawArc(rect, -0.8, 1.6, false, paint);
+
+    // Horizontal bar
+    final barPaint = Paint()
+      ..color = const Color(0xFF4285F4)
+      ..style = PaintingStyle.fill;
+    canvas.drawRect(
+      Rect.fromLTWH(cx - w * 0.05, cy - w * 0.11, w * 0.55, w * 0.22),
+      barPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

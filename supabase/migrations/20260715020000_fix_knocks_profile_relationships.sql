@@ -1,0 +1,4 @@
+-- Placeholder migration.
+-- The knocks/profile relationship fix is already represented in the current
+-- app schema. This file intentionally contains no SQL so migration ordering
+-- remains valid.
