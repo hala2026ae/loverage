@@ -60,7 +60,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       if (!mounted) return;
       setState(() {
         _partner = _partnerFromRow(partner);
-        _messages = rows.map(_messageFromRow).toList();
+        _messages = rows.map(_messageFromRow).toList().reversed.toList();
         _isLoading = false;
       });
       _scrollToBottom();
@@ -95,7 +95,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       readAt: null,
     );
 
-    setState(() => _messages.add(optimistic));
+    setState(() => _messages.insert(0, optimistic));
     _messageController.clear();
     _scrollToBottom();
 
@@ -129,7 +129,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
+          0.0,
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
@@ -304,6 +304,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                     Expanded(
                       child: ListView.builder(
                         controller: _scrollController,
+                        reverse: true,
                         padding: const EdgeInsets.all(AppSpacing.m),
                         itemCount: _messages.length,
                         itemBuilder: (context, index) {
