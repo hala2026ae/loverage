@@ -8,10 +8,10 @@ import 'package:image_picker/image_picker.dart';
 import 'dart:async';
 import 'dart:typed_data';
 import '../../../app/theme/app_theme.dart';
-import '../../authentication/domain/auth_repository_interface.dart';
 import '../../../core/data/loverage_repository.dart';
 import '../../profiles/presentation/profile_detail_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../../core/presentation/loverage_image.dart';
 
 class AccountSettingsTab extends ConsumerStatefulWidget {
   const AccountSettingsTab({super.key});
@@ -21,8 +21,9 @@ class AccountSettingsTab extends ConsumerStatefulWidget {
 }
 
 class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
-  bool _isSigningOut = false;
   final _scrollCtrl = ScrollController();
+  String _entitlement = 'free';
+  String? _validTillDate;
   bool _showTitle = false;
   Map<String, dynamic>? _profile;
   Map<String, dynamic> _details = {};
@@ -30,6 +31,21 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
   List<String> _traits = [];
   List<String> _interests = [];
   bool _isLoading = true;
+  RealtimeChannel? _profilePhotosChannel;
+  RealtimeChannel? _profileChannel;
+  final List<RealtimeChannel> _profilePartChannels = [];
+
+  String _formatValidTill(String? rawIsoDate) {
+    if (rawIsoDate == null || rawIsoDate.isEmpty) return '';
+    final dt = DateTime.tryParse(rawIsoDate)?.toLocal();
+    if (dt == null) return '';
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
+    final month = months[dt.month - 1];
+    return '${dt.day} $month ${dt.year}';
+  }
 
   @override
   void initState() {
@@ -41,6 +57,7 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
       }
     });
     _loadProfile();
+    _subscribeToRealtime();
   }
 
   Future<void> _loadProfile() async {
@@ -49,16 +66,36 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
       final supabase = Supabase.instance.client;
       final userId = supabase.auth.currentUser!.id;
       final profile = await repository.myProfile();
-      final premiumSubscriptions = await _safeRows(
+      final activeSubscriptions = await _safeRows(
         () => supabase
             .from('subscriptions')
-            .select('id')
+            .select('id, current_period_end')
             .eq('user_id', userId)
             .eq('status', 'active')
-            .eq('entitlement', 'premium')
+            .neq('entitlement', 'free')
             .gt('current_period_end', DateTime.now().toUtc().toIso8601String())
+            .order('current_period_end', ascending: false)
             .limit(1),
       );
+
+      String entitlement = 'free';
+      try {
+        final currentSub = await supabase.rpc('get_my_current_subscription');
+        if (currentSub is Map && currentSub['entitlement'] != null) {
+          entitlement = currentSub['entitlement'].toString().toLowerCase();
+        }
+      } catch (_) {}
+      if (entitlement == 'free' && activeSubscriptions.isNotEmpty) {
+        entitlement = 'premium';
+      }
+
+      String? validTillDate;
+      if (activeSubscriptions.isNotEmpty) {
+        validTillDate = _formatValidTill(
+          activeSubscriptions.first['current_period_end']?.toString(),
+        );
+      }
+
       final details = await _safeMaybeSingle(
         () => supabase
             .from('profile_optional_details')
@@ -87,7 +124,9 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
       );
       if (!mounted) return;
       setState(() {
-        _profile = {...?profile, 'is_premium': premiumSubscriptions.isNotEmpty};
+        _profile = {...?profile, 'is_premium': activeSubscriptions.isNotEmpty};
+        _entitlement = entitlement;
+        _validTillDate = validTillDate;
         _details = details;
         _traits = _stringList(traits, 'trait');
         _interests = _stringList(interests, 'interest');
@@ -177,7 +216,7 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
           (_interests.length / 5).clamp(0, 1).toDouble(),
           _filled(_details['smoking']) ? 1 : 0,
           _filled(_details['drinking']) ? 1 : 0,
-          _details['pet_lover'] == true ? 1 : 0,
+          _details.containsKey('pet_lover') ? 1 : 0,
         ]),
       ),
       _CompletionPart(
@@ -249,9 +288,92 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
     if (mounted) _loadProfile();
   }
 
+  Future<void> _refreshProfilePhotos() async {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId != null) {
+      LoverageRepository(Supabase.instance.client).invalidateProfile(userId);
+    }
+    await _loadProfile();
+  }
+
+  void _subscribeToRealtime() {
+    final supabase = Supabase.instance.client;
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) return;
+
+    _profilePhotosChannel = supabase
+        .channel('my_profile_photos')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'profile_photos',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'user_id',
+            value: userId,
+          ),
+          callback: (payload) {
+            _refreshProfilePhotos();
+          },
+        )
+        .subscribe();
+
+    _profileChannel = supabase
+        .channel('my_profile')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'profiles',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'id',
+            value: userId,
+          ),
+          callback: (payload) {
+            _loadProfile();
+          },
+        )
+        .subscribe();
+
+    for (final config in const [
+      ('profile_optional_details', 'user_id'),
+      ('profile_traits', 'user_id'),
+      ('profile_interests', 'user_id'),
+      ('user_filters', 'user_id'),
+    ]) {
+      _profilePartChannels.add(
+        supabase
+            .channel('my_${config.$1}')
+            .onPostgresChanges(
+              event: PostgresChangeEvent.all,
+              schema: 'public',
+              table: config.$1,
+              filter: PostgresChangeFilter(
+                type: PostgresChangeFilterType.eq,
+                column: config.$2,
+                value: userId,
+              ),
+              callback: (payload) {
+                _loadProfile();
+              },
+            )
+            .subscribe(),
+      );
+    }
+  }
+
   @override
   void dispose() {
     _scrollCtrl.dispose();
+    if (_profilePhotosChannel != null) {
+      Supabase.instance.client.removeChannel(_profilePhotosChannel!);
+    }
+    if (_profileChannel != null) {
+      Supabase.instance.client.removeChannel(_profileChannel!);
+    }
+    for (final channel in _profilePartChannels) {
+      Supabase.instance.client.removeChannel(channel);
+    }
     super.dispose();
   }
 
@@ -267,6 +389,7 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
     }
     final name = _profile?['public_name'] as String? ?? 'Loverage Member';
     final isPremium = _profile?['is_premium'] as bool? ?? false;
+    final isSubscribed = _entitlement != 'free';
     final completion = _profileCompletion();
     final completionByRoute = {
       for (final part in completion.parts) part.route: part,
@@ -286,7 +409,7 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
           slivers: [
             // ── Profile Header ──────────────────────────────────────────────
             SliverAppBar(
-              expandedHeight: 430,
+              expandedHeight: 460,
               pinned: true,
               backgroundColor: const Color(0xFF5A0E22),
               elevation: 0,
@@ -294,7 +417,10 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
               shadowColor: const Color(0xFF3D0717).withOpacity(0.28),
               surfaceTintColor: Colors.transparent,
               flexibleSpace: FlexibleSpaceBar(
-                background: _ProfileHeader(profile: _profile),
+                background: _ProfileHeader(
+                  profile: _profile,
+                  onPhotosChanged: _refreshProfilePhotos,
+                ),
               ),
               title: AnimatedOpacity(
                 opacity: _showTitle ? 1.0 : 0.0,
@@ -338,9 +464,15 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
                 delegate: SliverChildListDelegate([
                   _StatsDashboard(isPremium: isPremium),
                   const SizedBox(height: 20),
-                  // Premium Banner
-                  _PremiumBanner(onTap: () => context.push('/paywall')),
-                  const SizedBox(height: 24),
+                  // Membership Plan Card (When NOT subscribed, keep in current place)
+                  if (!isSubscribed) ...[
+                    _MembershipPlanCard(
+                      entitlement: _entitlement,
+                      validTillDate: _validTillDate,
+                      onTapUpgrade: () => context.push('/paywall'),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
 
                   // Account section
                   _SectionHeader(
@@ -425,6 +557,29 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
                   ),
                   const SizedBox(height: 20),
 
+                  // Account Settings section
+                  _SectionHeader(title: 'Account'),
+                  _SettingsGroup(
+                    items: [
+                      _SettingsItem(
+                        icon: Icons.manage_accounts_outlined,
+                        assetPath: 'Assets/account setting.png',
+                        label: 'Account Settings',
+                        onTap: () => context.push('/account-info'),
+                      ),
+                    ],
+                  ),
+                  // Membership Plan Card (When subscribed, place under Account Settings button)
+                  if (isSubscribed) ...[
+                    const SizedBox(height: 16),
+                    _MembershipPlanCard(
+                      entitlement: _entitlement,
+                      validTillDate: _validTillDate,
+                      onTapUpgrade: () => context.push('/paywall'),
+                    ),
+                  ],
+                  const SizedBox(height: 20),
+
                   // Preferences section
                   _SectionHeader(title: 'Preferences'),
                   _SettingsGroup(
@@ -445,6 +600,7 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
                     items: [
                       _SettingsItem(
                         icon: Icons.receipt_long_outlined,
+                        assetPath: 'Assets/refund policy.png',
                         label: 'Refund Policy',
                         onTap: () => context.push('/refund'),
                       ),
@@ -462,94 +618,12 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 28),
-
-                  // Sign Out
-                  _isSigningOut
-                      ? const Center(
-                          child: CircularProgressIndicator(
-                            color: AppColors.primaryBurgundy,
-                          ),
-                        )
-                      : GestureDetector(
-                          onTap: _signOut,
-                          child: Container(
-                            height: 54,
-                            decoration: BoxDecoration(
-                              color: AppColors.error.withOpacity(0.07),
-                              borderRadius: BorderRadius.circular(AppRadius.m),
-                              border: Border.all(
-                                color: AppColors.error.withOpacity(0.25),
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: AppColors.error.withOpacity(0.08),
-                                  blurRadius: 16,
-                                  offset: const Offset(0, 7),
-                                ),
-                              ],
-                            ),
-                            alignment: Alignment.center,
-                            child: const Text(
-                              'Sign Out',
-                              style: TextStyle(
-                                color: AppColors.error,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                        ),
-                  const SizedBox(height: 12),
-
-                  // Delete account
-                  Center(
-                    child: TextButton(
-                      onPressed: () => _showDeleteConfirm(context),
-                      child: const Text(
-                        'Delete Account',
-                        style: TextStyle(
-                          color: AppColors.textMuted,
-                          fontSize: 13.5,
-                          decoration: TextDecoration.underline,
-                        ),
-                      ),
-                    ),
-                  ),
                   const SizedBox(height: 40),
                 ]),
               ),
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Future<void> _signOut() async {
-    setState(() => _isSigningOut = true);
-    await ref.read(authRepositoryProvider).signOut();
-  }
-
-  void _showDeleteConfirm(BuildContext ctx) {
-    showDialog(
-      context: ctx,
-      builder: (_) => AlertDialog(
-        title: const Text('Delete Account'),
-        content: const Text(
-          'This will permanently delete your account and all data. This cannot be undone.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Delete'),
-          ),
-        ],
       ),
     );
   }
@@ -560,20 +634,24 @@ class _AccountSettingsTabState extends ConsumerState<AccountSettingsTab> {
 // ─────────────────────────────────────────────────────────────────────────────
 class _ProfileHeader extends StatefulWidget {
   final Map<String, dynamic>? profile;
-  const _ProfileHeader({super.key, required this.profile});
+  final Future<void> Function() onPhotosChanged;
+
+  const _ProfileHeader({required this.profile, required this.onPhotosChanged});
 
   @override
   State<_ProfileHeader> createState() => _ProfileHeaderState();
 }
 
 class _ProfileHeaderState extends State<_ProfileHeader> {
+  static const int _maxProfilePhotos = 12;
+
   List<String> _profileImages = [];
   List<Map<String, dynamic>> _profilePhotoRows = [];
   int _mainImageIndex = 0;
   int _selectedImageIndex = 0;
-  int _storedPhotoCount = 0;
   final ScrollController _galleryScrollCtrl = ScrollController();
   bool _isUploadingPhoto = false;
+  bool _isGalleryCollapsed = true;
 
   @override
   void initState() {
@@ -597,7 +675,6 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
       _ => null,
     };
     if (photos != null && photos.isNotEmpty) {
-      _storedPhotoCount = photos.length;
       final sorted = List<Map<String, dynamic>>.from(photos)
         ..sort(
           (a, b) => (a['sort_order'] as num? ?? 0).compareTo(
@@ -616,9 +693,11 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
       _mainImageIndex = primaryIndex >= 0 ? primaryIndex : 0;
       _selectedImageIndex = _mainImageIndex;
     } else {
-      _storedPhotoCount = 0;
+      final gender = widget.profile?['gender']?.toString().toLowerCase() ?? '';
       _profileImages = [
-        'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400',
+        gender == 'bride' || gender.contains('female')
+            ? 'Assets/EMPTY Female ACCOUNT.png'
+            : 'Assets/EMPTY MALE ACCOUNT.png',
       ];
       _profilePhotoRows = const [];
       _mainImageIndex = 0;
@@ -632,54 +711,109 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
     super.dispose();
   }
 
-  Future<_PickedProfilePhoto?> _pickProfilePhoto() async {
+  int get _realPhotoCount => _profilePhotoRows.length;
+
+  int get _remainingPhotoSlots =>
+      (_maxProfilePhotos - _realPhotoCount).clamp(0, _maxProfilePhotos);
+
+  Future<List<_PickedProfilePhoto>> _pickProfilePhotos() async {
     final source = await showModalBottomSheet<_ProfilePhotoSource>(
       context: context,
       backgroundColor: Colors.transparent,
       builder: (context) => const _ProfilePhotoSourceSheet(),
     );
-    if (source == null || !mounted) return null;
+    if (source == null || !mounted) return const [];
 
     try {
       switch (source) {
         case _ProfilePhotoSource.gallery:
-          final file = await ImagePicker().pickImage(
-            source: ImageSource.gallery,
-            imageQuality: 90,
-            maxWidth: 2200,
-          );
-          if (file == null) return null;
-          return _cropProfilePhoto(file.path, file.name);
+          try {
+            final files = await ImagePicker().pickMultiImage(
+              imageQuality: 90,
+              maxWidth: 2200,
+              limit: _remainingPhotoSlots,
+            );
+            return _cropPickedProfilePhotos(files);
+          } catch (_) {
+            return _pickProfilePhotosFromFiles(allowMultiple: true);
+          }
         case _ProfilePhotoSource.camera:
           final file = await ImagePicker().pickImage(
             source: ImageSource.camera,
             imageQuality: 90,
             maxWidth: 2200,
           );
-          if (file == null) return null;
-          return _cropProfilePhoto(file.path, file.name);
+          if (file == null) return const [];
+          final photo = await _cropProfilePhoto(file.path, file.name);
+          return [?photo];
         case _ProfilePhotoSource.files:
-          const imageTypes = XTypeGroup(
-            label: 'Images',
-            extensions: ['jpg', 'jpeg', 'png', 'webp', 'heic'],
-            uniformTypeIdentifiers: [
-              'public.jpeg',
-              'public.png',
-              'org.webmproject.webp',
-              'public.heic',
-            ],
-          );
-          final file = await openFile(acceptedTypeGroups: [imageTypes]);
-          if (file == null) return null;
-          return _cropProfilePhoto(file.path, file.name);
+          return _pickProfilePhotosFromFiles(allowMultiple: true);
       }
     } catch (e) {
-      if (!mounted) return null;
+      if (!mounted) return const [];
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Could not select photo: $e')));
     }
-    return null;
+    return const [];
+  }
+
+  Future<List<_PickedProfilePhoto>> _pickProfilePhotosFromFiles({
+    required bool allowMultiple,
+  }) async {
+    const imageTypes = XTypeGroup(
+      label: 'Images',
+      extensions: ['jpg', 'jpeg', 'png', 'webp', 'heic'],
+      uniformTypeIdentifiers: [
+        'public.jpeg',
+        'public.png',
+        'org.webmproject.webp',
+        'public.heic',
+      ],
+    );
+    final pickedFile = allowMultiple
+        ? null
+        : await openFile(acceptedTypeGroups: [imageTypes]);
+    final files = allowMultiple
+        ? await openFiles(acceptedTypeGroups: [imageTypes])
+        : [?pickedFile];
+    return _cropPickedProfilePhotos(files);
+  }
+
+  Future<List<_PickedProfilePhoto>> _cropPickedProfilePhotos(
+    List<XFile> files,
+  ) async {
+    final photos = <_PickedProfilePhoto>[];
+    var skipped = 0;
+    for (final file in files.take(_remainingPhotoSlots)) {
+      try {
+        final photo = await _cropProfilePhoto(file.path, file.name);
+        if (photo != null) {
+          photos.add(photo);
+        } else {
+          skipped += 1;
+        }
+      } catch (_) {
+        skipped += 1;
+      }
+    }
+    if (skipped > 0 && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            skipped == 1
+                ? 'One photo could not be loaded. The rest were kept.'
+                : '$skipped photos could not be loaded. The rest were kept.',
+          ),
+        ),
+      );
+    }
+    return photos;
+  }
+
+  Future<_PickedProfilePhoto?> _pickProfilePhoto() async {
+    final photos = await _pickProfilePhotos();
+    return photos.isEmpty ? null : photos.first;
   }
 
   Future<_PickedProfilePhoto?> _cropProfilePhoto(
@@ -688,17 +822,17 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
   ) async {
     final croppedFile = await ImageCropper().cropImage(
       sourcePath: path,
-      aspectRatio: const CropAspectRatio(ratioX: 1.0, ratioY: 1.0),
+      aspectRatio: const CropAspectRatio(ratioX: 2.0, ratioY: 3.0),
       uiSettings: [
         AndroidUiSettings(
-          toolbarTitle: 'Crop Photo to Square',
+          toolbarTitle: 'Crop Profile Photo',
           toolbarColor: const Color(0xFF5E0B24),
           toolbarWidgetColor: Colors.white,
-          initAspectRatio: CropAspectRatioPreset.square,
+          initAspectRatio: CropAspectRatioPreset.original,
           lockAspectRatio: true,
         ),
         IOSUiSettings(
-          title: 'Crop Photo to Square',
+          title: 'Crop Profile Photo',
           aspectRatioLockEnabled: true,
           resetAspectRatioEnabled: false,
           aspectRatioPickerButtonHidden: true,
@@ -711,78 +845,133 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
   }
 
   Future<void> _showPhotoSourceSheet() async {
-    final photo = await _pickProfilePhoto();
-    if (photo == null || !mounted) return;
-    await _uploadProfilePhoto(photo.bytes, photo.fileName);
+    if (_remainingPhotoSlots <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('You can upload up to 12 profile photos.'),
+        ),
+      );
+      return;
+    }
+    final photos = await _pickProfilePhotos();
+    if (photos.isEmpty || !mounted) return;
+    await _uploadProfilePhotos(photos);
   }
 
-  Future<void> _uploadProfilePhoto(Uint8List bytes, String fileName) async {
+  Future<void> _uploadProfilePhotos(List<_PickedProfilePhoto> photos) async {
     if (_isUploadingPhoto) return;
+    final allowedPhotos = photos.take(_remainingPhotoSlots).toList();
+    if (allowedPhotos.isEmpty) return;
     setState(() => _isUploadingPhoto = true);
 
     try {
       final supabase = Supabase.instance.client;
       final userId = supabase.auth.currentUser!.id;
-      final extension = _imageExtension(fileName);
-      final objectPath =
-          '$userId/${DateTime.now().microsecondsSinceEpoch}.$extension';
-      final isFirstPhoto = _storedPhotoCount == 0;
+      final newRows = <Map<String, dynamic>>[];
+      var failedUploads = 0;
 
-      await supabase.storage
-          .from('profile-photos')
-          .uploadBinary(
-            objectPath,
-            bytes,
-            fileOptions: FileOptions(
-              contentType: _imageContentType(extension),
-              upsert: false,
-            ),
-          );
-      final publicUrl = supabase.storage
-          .from('profile-photos')
-          .getPublicUrl(objectPath);
-      final inserted = await supabase
-          .from('profile_photos')
-          .insert({
-            'user_id': userId,
+      for (var i = 0; i < allowedPhotos.length; i++) {
+        final photo = allowedPhotos[i];
+        final extension = _imageExtension(photo.fileName);
+        final objectPath =
+            '$userId/${DateTime.now().microsecondsSinceEpoch}_$i.$extension';
+        final isFirstPhoto = _realPhotoCount == 0 && newRows.isEmpty;
+        final sortOrder = _realPhotoCount + newRows.length;
+        var objectUploaded = false;
+        try {
+          await supabase.storage
+              .from('profile_photos')
+              .uploadBinary(
+                objectPath,
+                photo.bytes,
+                fileOptions: FileOptions(
+                  contentType: _imageContentType(extension),
+                  upsert: false,
+                ),
+              );
+          objectUploaded = true;
+          final publicUrl = supabase.storage
+              .from('profile_photos')
+              .getPublicUrl(objectPath);
+          final inserted = await supabase
+              .from('profile_photos')
+              .insert({
+                'user_id': userId,
+                'public_url': publicUrl,
+                'is_primary': isFirstPhoto,
+                'sort_order': sortOrder,
+                'moderation_status': 'pending',
+              })
+              .select('id')
+              .single();
+
+          if (isFirstPhoto) {
+            await supabase
+                .from('profiles')
+                .update({'main_photo_id': inserted['id']})
+                .eq('id', userId);
+          }
+
+          newRows.add({
+            'id': inserted['id'],
             'public_url': publicUrl,
             'is_primary': isFirstPhoto,
-            'sort_order': _storedPhotoCount,
+            'sort_order': sortOrder,
             'moderation_status': 'pending',
-          })
-          .select('id')
-          .single();
-
-      if (isFirstPhoto) {
-        await supabase
-            .from('profiles')
-            .update({'main_photo_id': inserted['id']})
-            .eq('id', userId);
+          });
+        } catch (_) {
+          failedUploads += 1;
+          if (objectUploaded) {
+            try {
+              await supabase.storage.from('profile_photos').remove([
+                objectPath,
+              ]);
+            } catch (_) {}
+          }
+        }
       }
 
       if (!mounted) return;
+      if (newRows.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not upload the selected photos.'),
+          ),
+        );
+        return;
+      }
       setState(() {
-        _storedPhotoCount += 1;
-        final row = {
-          'id': inserted['id'],
-          'public_url': publicUrl,
-          'is_primary': isFirstPhoto,
-          'sort_order': _storedPhotoCount - 1,
-        };
-        if (isFirstPhoto) {
-          _profileImages = [publicUrl];
-          _profilePhotoRows = [row];
+        final replacingFallback = _profilePhotoRows.isEmpty;
+        if (replacingFallback) {
+          _profileImages = newRows
+              .map((row) => row['public_url']?.toString() ?? '')
+              .where((url) => url.isNotEmpty)
+              .toList();
+          _profilePhotoRows = newRows;
           _mainImageIndex = 0;
           _selectedImageIndex = 0;
         } else {
-          _profileImages.add(publicUrl);
-          _profilePhotoRows.add(row);
+          _profileImages.addAll(
+            newRows
+                .map((row) => row['public_url']?.toString() ?? '')
+                .where((url) => url.isNotEmpty),
+          );
+          _profilePhotoRows.addAll(newRows);
           _selectedImageIndex = _profileImages.length - 1;
         }
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Photo uploaded and sent for review.')),
+        SnackBar(
+          content: Text(
+            failedUploads > 0
+                ? '${newRows.length} uploaded. $failedUploads could not be uploaded.'
+                : newRows.length == 1
+                ? 'Photo uploaded and sent for review.'
+                : '${newRows.length} photos uploaded and sent for review.',
+          ),
+        ),
       );
+      await widget.onPhotosChanged();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -814,8 +1003,11 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
     final action = await showModalBottomSheet<_ProfilePhotoAction>(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (context) =>
-          _ProfilePhotoActionSheet(canDelete: !isMain, canSetAsMain: !isMain),
+      builder: (context) => _ProfilePhotoActionSheet(
+        canDelete: !isMain,
+        canSetAsMain: !isMain,
+        canAdd: _remainingPhotoSlots > 0,
+      ),
     );
     if (!mounted || action == null) return;
     switch (action) {
@@ -871,6 +1063,7 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Main photo updated.')));
+      await widget.onPhotosChanged();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -891,7 +1084,7 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
       final objectPath =
           '$userId/${DateTime.now().microsecondsSinceEpoch}.$extension';
       await supabase.storage
-          .from('profile-photos')
+          .from('profile_photos')
           .uploadBinary(
             objectPath,
             photo.bytes,
@@ -901,7 +1094,7 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
             ),
           );
       final publicUrl = supabase.storage
-          .from('profile-photos')
+          .from('profile_photos')
           .getPublicUrl(objectPath);
       await supabase
           .from('profile_photos')
@@ -918,6 +1111,7 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Photo replaced and sent for review.')),
       );
+      await widget.onPhotosChanged();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -939,7 +1133,6 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
       setState(() {
         _profileImages.removeAt(index);
         _profilePhotoRows.removeAt(index);
-        _storedPhotoCount = _profilePhotoRows.length;
         if (_selectedImageIndex >= _profileImages.length) {
           _selectedImageIndex = _profileImages.length - 1;
         }
@@ -948,6 +1141,7 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Photo deleted.')));
+      await widget.onPhotosChanged();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -967,7 +1161,14 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
       backgroundColor: Colors.transparent,
       builder: (sheetContext) => _ProfilePreviewSheet(
         profile: profile,
-        imageUrl: _profileImages[_mainImageIndex],
+        imageUrls: List<String>.from(_profileImages),
+        photoStatuses: List<String?>.generate(
+          _profileImages.length,
+          (index) => index < _profilePhotoRows.length
+              ? _profilePhotoRows[index]['moderation_status']?.toString()
+              : null,
+        ),
+        initialIndex: _selectedImageIndex,
         onViewDetails: userId == null
             ? null
             : () => _showFullProfilePreview(sheetContext, userId),
@@ -999,6 +1200,167 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
     );
   }
 
+  Widget _buildFramePhoto(String url) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Positioned.fill(
+          child: Padding(
+            padding: const EdgeInsets.all(4.0),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: LoverageImage(
+                imageUrl: url,
+                fit: BoxFit.cover,
+              ),
+            ),
+          ),
+        ),
+        Positioned.fill(
+          child: Image.asset(
+            'Assets/2to3frame.png',
+            fit: BoxFit.fill,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCollapsedStack(List<String> urls) {
+    if (urls.isEmpty) return const SizedBox.shrink();
+
+    final mainUrl = urls[0];
+    final secondUrl = urls.length > 1 ? urls[1] : null;
+    final thirdUrl = urls.length > 2 ? urls[2] : null;
+
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _isGalleryCollapsed = false;
+        });
+      },
+      child: Center(
+        child: SizedBox(
+          width: 170,
+          height: 230,
+          child: Stack(
+            alignment: Alignment.center,
+            clipBehavior: Clip.none,
+            children: [
+              // Third card (backmost)
+              if (thirdUrl != null)
+                Positioned(
+                  width: 130,
+                  height: 195,
+                  child: Transform.translate(
+                    offset: const Offset(12, 12),
+                    child: Transform.rotate(
+                      angle: 0.04,
+                      child: Opacity(
+                        opacity: 0.5,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(24),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.08),
+                                blurRadius: 12,
+                                offset: const Offset(0, 6),
+                              ),
+                            ],
+                          ),
+                          child: _buildFramePhoto(thirdUrl),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
+              // Second card (middle)
+              if (secondUrl != null)
+                Positioned(
+                  width: 130,
+                  height: 195,
+                  child: Transform.translate(
+                    offset: const Offset(-8, 6),
+                    child: Transform.rotate(
+                      angle: -0.03,
+                      child: Opacity(
+                        opacity: 0.8,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(24),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.12),
+                                blurRadius: 16,
+                                offset: const Offset(0, 8),
+                              ),
+                            ],
+                          ),
+                          child: _buildFramePhoto(secondUrl),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
+              // Main card (frontmost)
+              Positioned(
+                width: 130,
+                height: 195,
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(24),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.18),
+                        blurRadius: 20,
+                        offset: const Offset(0, 10),
+                      ),
+                    ],
+                  ),
+                  child: _buildFramePhoto(mainUrl),
+                ),
+              ),
+
+              // Tap helper label overlay
+              Positioned(
+                bottom: -2,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.6),
+                    borderRadius: BorderRadius.circular(99),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.photo_library_rounded,
+                        color: Colors.white,
+                        size: 11,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${urls.length} photos · Tap to manage',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final p = widget.profile;
@@ -1014,11 +1376,12 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
 
     return Container(
       decoration: const BoxDecoration(gradient: AppColors.primaryGradient),
-      child: SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.only(top: 28),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const SizedBox(height: 20),
+            const SizedBox(height: 8),
             // Center title
             Stack(
               clipBehavior: Clip.none,
@@ -1031,172 +1394,250 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
                     color: Colors.white.withOpacity(0.9),
                   ).copyWith(letterSpacing: 0.5),
                 ),
-                Positioned(
-                  left: -12,
-                  top: -10,
-                  child: Transform.rotate(
-                    angle: -0.785, // -45 degrees
-                    child: Image.asset(
-                      'Assets/Gold mem.png',
-                      width: 18,
-                      height: 18,
-                      fit: BoxFit.contain,
-                      color: isPremium ? null : Colors.grey.withOpacity(0.6),
+                if (isPremium)
+                  Positioned(
+                    left: -12,
+                    top: -10,
+                    child: Transform.rotate(
+                      angle: -0.785, // -45 degrees
+                      child: Image.asset('Assets/Gold mem.png', width: 18),
                     ),
                   ),
-                ),
               ],
             ),
-            const SizedBox(height: 4),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  width: 24,
-                  height: 1,
-                  color: const Color(0xFFD4956A).withOpacity(0.4),
-                ),
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 8),
-                  child: Icon(
-                    Icons.favorite_rounded,
-                    color: Color(0xFFD4956A),
-                    size: 10,
-                  ),
-                ),
-                Container(
-                  width: 24,
-                  height: 1,
-                  color: const Color(0xFFD4956A).withOpacity(0.4),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 10),
 
-            // Horizontal scrollable gallery row
-            SizedBox(
-              height: 156,
-              child: SingleChildScrollView(
-                controller: _galleryScrollCtrl,
-                scrollDirection: Axis.horizontal,
-                physics: const BouncingScrollPhysics(),
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    ...List.generate(_profileImages.length, (index) {
-                      final isSelected = _selectedImageIndex == index;
-                      final isMain = _mainImageIndex == index;
-                      final imageUrl = _profileImages[index];
+            // Photo Gallery
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 300),
+              child: _isGalleryCollapsed
+                  ? _buildCollapsedStack(_profileImages)
+                  : Column(
+                      key: const ValueKey('uncollapsed_gallery'),
+                      children: [
+                        SizedBox(
+                          height: 230,
+                          child: SingleChildScrollView(
+                            controller: _galleryScrollCtrl,
+                            scrollDirection: Axis.horizontal,
+                            physics: const BouncingScrollPhysics(),
+                            padding: const EdgeInsets.symmetric(horizontal: 24),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                ...List.generate(_profileImages.length, (index) {
+                                  final isSelected = _selectedImageIndex == index;
+                                  final isMain = _mainImageIndex == index;
+                                  final imageUrl = _profileImages[index];
+                                  final row = (index < _profilePhotoRows.length)
+                                      ? _profilePhotoRows[index]
+                                      : null;
+                                  final isPending =
+                                      row != null && row['moderation_status'] == 'pending';
+                                  final isRejected =
+                                      row != null && row['moderation_status'] == 'rejected';
+                                  final isApproved =
+                                      row != null && row['moderation_status'] == 'approved';
 
-                      return GestureDetector(
-                        onTap: () => _showImageManagementSheet(index),
-                        child: AnimatedOpacity(
-                          duration: const Duration(milliseconds: 200),
-                          opacity: 1.0,
-                          child: AnimatedScale(
-                            duration: const Duration(milliseconds: 200),
-                            scale: 1.0,
-                            child: Container(
-                              margin: const EdgeInsets.symmetric(horizontal: 8),
-                              child: AnimatedContainer(
-                                duration: const Duration(milliseconds: 250),
-                                curve: Curves.easeInOut,
-                                width: isSelected ? 140 : 84,
-                                height: isSelected ? 140 : 84,
-                                child: Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    Padding(
-                                      padding: EdgeInsets.fromLTRB(
-                                        isSelected ? 9 : 5,
-                                        isSelected ? 10 : 6,
-                                        isSelected ? 9 : 5,
-                                        isSelected ? 10 : 6,
-                                      ),
-                                      child: ClipRRect(
-                                        borderRadius: BorderRadius.circular(
-                                          isSelected ? 18 : 11,
-                                        ),
-                                        child: Stack(
-                                          fit: StackFit.expand,
-                                          children: [
-                                            Image.network(
-                                              imageUrl,
-                                              fit: BoxFit.cover,
-                                            ),
-                                            if (!isSelected)
-                                              Container(
-                                                color: Colors.black.withOpacity(
-                                                  0.28,
+                                  return GestureDetector(
+                                    onTap: () => _showImageManagementSheet(index),
+                                    child: AnimatedOpacity(
+                                      duration: const Duration(milliseconds: 200),
+                                      opacity: 1.0,
+                                      child: AnimatedScale(
+                                        duration: const Duration(milliseconds: 200),
+                                        scale: 1.0,
+                                        child: Container(
+                                          margin: const EdgeInsets.symmetric(horizontal: 8),
+                                          child: AnimatedContainer(
+                                            duration: const Duration(milliseconds: 250),
+                                            curve: Curves.easeInOut,
+                                            width: 130,
+                                            height: 195,
+                                            child: Stack(
+                                              fit: StackFit.expand,
+                                              children: [
+                                                Padding(
+                                                  padding: const EdgeInsets.fromLTRB(
+                                                    11,
+                                                    15,
+                                                    11,
+                                                    15,
+                                                  ),
+                                                  child: ClipRRect(
+                                                    borderRadius: BorderRadius.circular(
+                                                      18,
+                                                    ),
+                                                    child: Stack(
+                                                      fit: StackFit.expand,
+                                                      children: [
+                                                        LoverageImage(
+                                                          imageUrl: imageUrl,
+                                                          fit: BoxFit.cover,
+                                                        ),
+                                                        if (isPending)
+                                                          Container(
+                                                            color: Colors.black54,
+                                                            alignment: Alignment.center,
+                                                            child: Padding(
+                                                              padding:
+                                                                  const EdgeInsets.symmetric(
+                                                                    horizontal: 4,
+                                                                  ),
+                                                              child: Text(
+                                                                'In Review',
+                                                                textAlign: TextAlign.center,
+                                                                style: TextStyle(
+                                                                  color: Colors.white
+                                                                      .withOpacity(0.85),
+                                                                  fontSize: 12,
+                                                                  fontWeight:
+                                                                      FontWeight.w700,
+                                                                  letterSpacing: 0.2,
+                                                                ),
+                                                              ),
+                                                            ),
+                                                          )
+                                                        else if (isRejected)
+                                                          Container(
+                                                            color: Colors.black87
+                                                                .withOpacity(0.72),
+                                                            alignment: Alignment.center,
+                                                            child: const Padding(
+                                                              padding:
+                                                                  EdgeInsets.symmetric(
+                                                                    horizontal: 4,
+                                                                  ),
+                                                              child: Column(
+                                                                mainAxisAlignment:
+                                                                    MainAxisAlignment
+                                                                        .center,
+                                                                children: [
+                                                                  Icon(
+                                                                    Icons
+                                                                        .error_outline_rounded,
+                                                                    color: Color(
+                                                                      0xFFF87171,
+                                                                    ),
+                                                                    size: 24,
+                                                                  ),
+                                                                  SizedBox(height: 2),
+                                                                  Text(
+                                                                    'Rejected',
+                                                                    textAlign:
+                                                                        TextAlign.center,
+                                                                    style: TextStyle(
+                                                                      color: Color(
+                                                                        0xFFF87171,
+                                                                      ),
+                                                                      fontSize: 12,
+                                                                      fontWeight:
+                                                                          FontWeight.w800,
+                                                                      letterSpacing: 0.2,
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                            ),
+                                                          )
+                                                        else if (!isSelected)
+                                                          Container(
+                                                            color: Colors.black.withOpacity(
+                                                              0.15,
+                                                            ),
+                                                          ),
+                                                      ],
+                                                    ),
+                                                  ),
                                                 ),
-                                              ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                    if (!isMain)
-                                      Image.asset(
-                                        'Assets/26 FRAME (1) (2).png',
-                                        fit: BoxFit.fill,
-                                      ),
-                                    if (isMain)
-                                      Positioned(
-                                        left: 0,
-                                        right: 0,
-                                        bottom: isSelected ? 12 : 7,
-                                        child: const Text(
-                                          'Main',
-                                          textAlign: TextAlign.center,
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w800,
-                                            shadows: [
-                                              Shadow(
-                                                color: Colors.black87,
-                                                blurRadius: 4,
-                                                offset: Offset(0, 1),
-                                              ),
-                                            ],
+                                                Image.asset(
+                                                  'Assets/2to3frame.png',
+                                                  fit: BoxFit.fill,
+                                                ),
+                                                if (isApproved)
+                                                  Positioned(
+                                                    top: 10,
+                                                    right: 8,
+                                                    child: Container(
+                                                      padding: const EdgeInsets.symmetric(
+                                                        horizontal: 6,
+                                                        vertical: 3,
+                                                      ),
+                                                      decoration: BoxDecoration(
+                                                        color: const Color(
+                                                          0xFF166534,
+                                                        ).withOpacity(0.9),
+                                                        borderRadius: BorderRadius.circular(
+                                                          99,
+                                                        ),
+                                                      ),
+                                                      child: const Text(
+                                                        'Approved',
+                                                        style: TextStyle(
+                                                          color: Colors.white,
+                                                          fontSize: 8,
+                                                          fontWeight: FontWeight.w800,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                if (isMain)
+                                                  const Positioned(
+                                                    left: 0,
+                                                    right: 0,
+                                                    bottom: 15,
+                                                    child: Text(
+                                                      'Main',
+                                                      textAlign: TextAlign.center,
+                                                      style: TextStyle(
+                                                        color: Colors.white,
+                                                        fontSize: 10,
+                                                        fontWeight: FontWeight.w800,
+                                                        shadows: [
+                                                          Shadow(
+                                                            color: Colors.black87,
+                                                            blurRadius: 4,
+                                                            offset: Offset(0, 1),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
                                           ),
                                         ),
                                       ),
-                                  ],
-                                ),
+                                    ),
+                                  );
+                                }),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        GestureDetector(
+                          onTap: () => setState(() => _isGalleryCollapsed = true),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.18),
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                            child: const Text(
+                              'Collapse stack',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ),
                         ),
-                      );
-                    }),
-                    if (_profileImages.length < 6)
-                      GestureDetector(
-                        onTap: _showPhotoSourceSheet,
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 8),
-                          width: 56,
-                          height: 56,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.08),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: Colors.white.withOpacity(0.2),
-                              width: 1.0,
-                            ),
-                          ),
-                          child: const Icon(
-                            Icons.add_rounded,
-                            color: Colors.white70,
-                            size: 20,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
+                      ],
+                    ),
             ),
-            const SizedBox(height: 34),
+            const SizedBox(height: 8),
             Stack(
               clipBehavior: Clip.none,
               children: [
@@ -1214,23 +1655,18 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
                     ),
                   ),
                 ),
-                Positioned(
-                  left: -8,
-                  top: -12,
-                  child: Transform.rotate(
-                    angle: -0.7853, // -45 degrees
-                    child: Image.asset(
-                      'Assets/Gold mem.png',
-                      width: 24,
-                      height: 24,
-                      fit: BoxFit.contain,
-                      color: isPremium ? null : Colors.grey.withOpacity(0.6),
+                if (isPremium)
+                  Positioned(
+                    left: -8,
+                    top: -12,
+                    child: Transform.rotate(
+                      angle: -0.7853, // -45 degrees
+                      child: Image.asset('Assets/Gold mem.png', width: 24),
                     ),
                   ),
-                ),
               ],
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -1323,10 +1759,12 @@ class _PickedProfilePhoto {
 class _ProfilePhotoActionSheet extends StatelessWidget {
   final bool canDelete;
   final bool canSetAsMain;
+  final bool canAdd;
 
   const _ProfilePhotoActionSheet({
     required this.canDelete,
     required this.canSetAsMain,
+    required this.canAdd,
   });
 
   @override
@@ -1349,6 +1787,12 @@ class _ProfilePhotoActionSheet extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
+          if (canAdd)
+            _PhotoSourceTile(
+              icon: Icons.add_photo_alternate_outlined,
+              title: 'Add More Images ',
+              onTap: () => Navigator.pop(context, _ProfilePhotoAction.add),
+            ),
           _PhotoSourceTile(
             icon: Icons.swap_horiz_rounded,
             title: 'Replace Image',
@@ -1475,12 +1919,16 @@ class _PhotoSourceTile extends StatelessWidget {
 
 class _ProfilePreviewSheet extends StatelessWidget {
   final Map<String, dynamic> profile;
-  final String imageUrl;
+  final List<String> imageUrls;
+  final List<String?> photoStatuses;
+  final int initialIndex;
   final VoidCallback? onViewDetails;
 
   const _ProfilePreviewSheet({
     required this.profile,
-    required this.imageUrl,
+    required this.imageUrls,
+    required this.photoStatuses,
+    required this.initialIndex,
     required this.onViewDetails,
   });
 
@@ -1563,15 +2011,26 @@ class _ProfilePreviewSheet extends StatelessWidget {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    Image.network(
-                      imageUrl,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => const Center(
-                        child: Icon(
-                          Icons.person_rounded,
-                          size: 72,
-                          color: AppColors.textMuted,
-                        ),
+                    PageView.builder(
+                      controller: PageController(initialPage: initialIndex),
+                      itemCount: imageUrls.length,
+                      itemBuilder: (context, index) => Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          LoverageImage(
+                            imageUrl: imageUrls[index],
+                            fit: BoxFit.cover,
+                          ),
+                          if (index < photoStatuses.length &&
+                              photoStatuses[index] != null)
+                            Positioned(
+                              top: 14,
+                              right: 14,
+                              child: _PhotoStatusBadge(
+                                status: photoStatuses[index]!,
+                              ),
+                            ),
+                        ],
                       ),
                     ),
                     const DecoratedBox(
@@ -1695,6 +2154,52 @@ class _ProfilePreviewSheet extends StatelessWidget {
   }
 }
 
+class _PhotoStatusBadge extends StatelessWidget {
+  final String status;
+
+  const _PhotoStatusBadge({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final (label, icon, color) = switch (status) {
+      'approved' => (
+        'Approved',
+        Icons.check_circle_outline_rounded,
+        const Color(0xFF34D399),
+      ),
+      'rejected' => (
+        'Rejected',
+        Icons.error_outline_rounded,
+        const Color(0xFFF87171),
+      ),
+      _ => ('In Review', Icons.hourglass_top_rounded, const Color(0xFFFBBF24)),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.72),
+        borderRadius: BorderRadius.circular(99),
+        border: Border.all(color: color.withOpacity(0.75)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 14),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ProfileCompletion {
   final int percent;
   final List<_CompletionPart> parts;
@@ -1723,87 +2228,201 @@ class _CompletionPart {
   int get percent => (score * 100).round().clamp(0, 100);
 }
 
-class _PremiumBanner extends StatelessWidget {
-  final VoidCallback onTap;
-  const _PremiumBanner({required this.onTap});
+class _MembershipPlanCard extends StatelessWidget {
+  final String entitlement;
+  final String? validTillDate;
+  final VoidCallback onTapUpgrade;
+
+  const _MembershipPlanCard({
+    required this.entitlement,
+    this.validTillDate,
+    required this.onTapUpgrade,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF3D0717), Color(0xFF6B0F2A), Color(0xFF3D0717)],
+    final isElite = entitlement == 'elite';
+    final isPremium = entitlement == 'premium' || entitlement == 'gold';
+
+    final String planTitle = isElite
+        ? 'Elite Plan'
+        : isPremium
+            ? 'Premium Plan'
+            : 'Free Plan';
+
+    final String planDesc = isElite
+        ? 'Unlimited Knocks & Direct Chats active'
+        : isPremium
+            ? '50 Daily Knocks & 15 New Chats per day'
+            : 'Unlock unlimited matches & advanced filters';
+
+    final String primaryButtonText = isElite
+        ? 'Manage / Downgrade Plan'
+        : isPremium
+            ? 'Upgrade to Elite'
+            : 'Upgrade Plan';
+
+    final String? secondaryButtonText = isPremium ? 'Downgrade Plan' : null;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: isElite
+              ? const [Color(0xFF2C1300), Color(0xFF5E2E00), Color(0xFF2C1300)]
+              : const [Color(0xFF3D0717), Color(0xFF6B0F2A), Color(0xFF3D0717)],
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isElite ? const Color(0xFFFFD700) : const Color(0xFFE8B86D),
+          width: 1.2,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF3D0717).withValues(alpha: 0.24),
+            blurRadius: 26,
+            spreadRadius: -6,
+            offset: const Offset(0, 14),
           ),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: const Color(0xFFE8B86D), width: 1.0),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF3D0717).withOpacity(0.24),
-              blurRadius: 26,
-              spreadRadius: -6,
-              offset: const Offset(0, 14),
-            ),
-            BoxShadow(
-              color: const Color(0xFFE8B86D).withOpacity(0.18),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Image.asset(
-              'Assets/Gold mem.png',
-              width: 44,
-              height: 44,
-              fit: BoxFit.contain,
-            ),
-            const SizedBox(width: 14),
-            const Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Upgrade to Premium',
-                    style: TextStyle(
-                      color: Colors.white,
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Image.asset(
+                'Assets/Gold mem.png',
+                width: 42,
+                height: 42,
+                fit: BoxFit.contain,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          planTitle,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 16,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isElite
+                                ? const Color(0xFFFFD700)
+                                : isPremium
+                                    ? const Color(0xFFE8B86D)
+                                    : Colors.white24,
+                            borderRadius: BorderRadius.circular(99),
+                          ),
+                          child: Text(
+                            isElite
+                                ? 'ACTIVE'
+                                : isPremium
+                                    ? 'PREMIUM'
+                                    : 'CURRENT',
+                            style: TextStyle(
+                              color: isElite || isPremium
+                                  ? Colors.black
+                                  : Colors.white,
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      planDesc,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        height: 1.3,
+                      ),
+                    ),
+                    if (validTillDate != null && validTillDate!.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Valid till $validTillDate',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: onTapUpgrade,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isElite
+                        ? const Color(0xFF333333)
+                        : const Color(0xFFE8B86D),
+                    foregroundColor: isElite ? Colors.white : Colors.black,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    elevation: 0,
+                  ),
+                  child: Text(
+                    primaryButtonText,
+                    style: const TextStyle(
                       fontWeight: FontWeight.w800,
-                      fontSize: 16,
+                      fontSize: 13,
                     ),
                   ),
-                  SizedBox(height: 4),
-                  Text(
-                    'Unlock unlimited matches & advanced filters',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12.5,
-                      height: 1.3,
+                ),
+              ),
+              if (secondaryButtonText != null) ...[
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: onTapUpgrade,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white70,
+                      side: const BorderSide(color: Colors.white30),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: Text(
+                      secondaryButtonText,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12.5,
+                      ),
                     ),
                   ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: const Color(0xFFE8B86D), width: 1.5),
-              ),
-              child: const Icon(
-                Icons.arrow_forward_ios_rounded,
-                color: Color(0xFFE8B86D),
-                size: 14,
-              ),
-            ),
-          ],
-        ),
+                ),
+              ],
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -2038,8 +2657,8 @@ class _StatsDashboard extends StatefulWidget {
 
 class _StatsDashboardState extends State<_StatsDashboard>
     with WidgetsBindingObserver {
-  static const _knockLimit = 20;
-  static const _chatLimit = 5;
+  int _knockLimit = 10;
+  int _chatLimit = 2;
 
   Timer? _limitResetTimer;
   RealtimeChannel? _usageChannel;
@@ -2103,9 +2722,13 @@ class _StatsDashboardState extends State<_StatsDashboard>
     if (mounted) {
       setState(() {
         if (change.action == DailyUsageAction.knock) {
-          _knocksUsed = change.used.clamp(0, _knockLimit);
+          _knockLimit = change.limit;
+          final maxLimit = _knockLimit < 0 ? 999999 : _knockLimit;
+          _knocksUsed = change.used.clamp(0, maxLimit);
         } else {
-          _chatsUsed = change.used.clamp(0, _chatLimit);
+          _chatLimit = change.limit;
+          final maxLimit = _chatLimit < 0 ? 999999 : _chatLimit;
+          _chatsUsed = change.used.clamp(0, maxLimit);
         }
         _loadingUsage = false;
       });
@@ -2149,8 +2772,12 @@ class _StatsDashboardState extends State<_StatsDashboard>
       if (!mounted) return;
       if (requestVersion != _lastUsageVersion) return;
       setState(() {
-        _knocksUsed = (usage['knocks_sent'] ?? 0).clamp(0, _knockLimit);
-        _chatsUsed = (usage['chat_requests_sent'] ?? 0).clamp(0, _chatLimit);
+        _knockLimit = usage['knock_limit'] ?? 10;
+        _chatLimit = usage['chat_limit'] ?? 2;
+        final maxKnock = _knockLimit < 0 ? 999999 : _knockLimit;
+        final maxChat = _chatLimit < 0 ? 999999 : _chatLimit;
+        _knocksUsed = (usage['knocks_sent'] ?? 0).clamp(0, maxKnock);
+        _chatsUsed = (usage['chat_requests_sent'] ?? 0).clamp(0, maxChat);
         _loadingUsage = false;
       });
     } catch (_) {
@@ -2180,8 +2807,12 @@ class _StatsDashboardState extends State<_StatsDashboard>
 
   @override
   Widget build(BuildContext context) {
-    final knocksLeft = (_knockLimit - _knocksUsed).clamp(0, _knockLimit);
-    final chatsLeft = (_chatLimit - _chatsUsed).clamp(0, _chatLimit);
+    final knocksLeft = _knockLimit < 0
+        ? -1
+        : (_knockLimit - _knocksUsed).clamp(0, _knockLimit);
+    final chatsLeft = _chatLimit < 0
+        ? -1
+        : (_chatLimit - _chatsUsed).clamp(0, _chatLimit);
 
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
@@ -2252,40 +2883,44 @@ class _StatsDashboardState extends State<_StatsDashboard>
                   ],
                 ),
               ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFFF0F2),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: const Color(0xFFF2D7DC)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.schedule_rounded,
-                      size: 13,
-                      color: AppColors.primaryBurgundy,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      _formatDuration(_timeUntilReset),
-                      style: const TextStyle(
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.w700,
+              if (_knockLimit >= 0 || _chatLimit >= 0)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 9,
+                    vertical: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF0F2),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFF2D7DC)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.schedule_rounded,
+                        size: 13,
                         color: AppColors.primaryBurgundy,
-                        fontFeatures: [FontFeature.tabularFigures()],
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 4),
+                      Text(
+                        _formatDuration(_timeUntilReset),
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.primaryBurgundy,
+                          fontFeatures: [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
             ],
           ),
           const SizedBox(height: 17),
           Container(height: 1, color: const Color(0xFFF0E7E4)),
           const SizedBox(height: 17),
-          if (widget.isPremium)
+          if (_knockLimit < 0 || _chatLimit < 0)
             const _PremiumUsageState()
           else
             Row(
