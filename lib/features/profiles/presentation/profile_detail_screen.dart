@@ -556,28 +556,12 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
   }
 
   Widget _buildFramePhoto(String url) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Positioned.fill(
-          child: Padding(
-            padding: const EdgeInsets.all(5.0),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(20),
-              child: LoverageImage(
-                imageUrl: url,
-                fit: BoxFit.cover,
-              ),
-            ),
-          ),
-        ),
-        Positioned.fill(
-          child: Image.asset(
-            'Assets/2to3frame.png',
-            fit: BoxFit.fill,
-          ),
-        ),
-      ],
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24),
+      child: LoverageImage(
+        imageUrl: url,
+        fit: BoxFit.cover,
+      ),
     );
   }
 
@@ -596,7 +580,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
       },
       child: Container(
         color: Colors.transparent,
-        padding: const EdgeInsets.fromLTRB(28, 64, 28, 28),
+        padding: const EdgeInsets.fromLTRB(16, 40, 16, 12),
         child: Stack(
           alignment: Alignment.center,
           clipBehavior: Clip.none,
@@ -671,38 +655,6 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                 child: _buildFramePhoto(mainUrl),
               ),
             ),
-
-            // Tap helper label overlay
-            if (urls.length > 1)
-              Positioned(
-                bottom: 16,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.6),
-                    borderRadius: BorderRadius.circular(99),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(
-                        Icons.photo_library_rounded,
-                        color: Colors.white,
-                        size: 13,
-                      ),
-                      const SizedBox(width: 5),
-                      Text(
-                        '${urls.length} photos · Tap to expand',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
           ],
         ),
       ),
@@ -783,7 +735,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                                     behavior: HitTestBehavior.opaque,
                                     onTap: () => _openPhotoViewer(index),
                                     child: Padding(
-                                      padding: const EdgeInsets.fromLTRB(28, 64, 28, 28),
+                                      padding: const EdgeInsets.fromLTRB(16, 40, 16, 12),
                                       child: _buildFramePhoto(photoUrls[index]),
                                     ),
                                   ),

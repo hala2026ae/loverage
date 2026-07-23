@@ -1323,37 +1323,6 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
                   child: _buildFramePhoto(mainUrl),
                 ),
               ),
-
-              // Tap helper label overlay
-              Positioned(
-                bottom: -2,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.6),
-                    borderRadius: BorderRadius.circular(99),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(
-                        Icons.photo_library_rounded,
-                        color: Colors.white,
-                        size: 11,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${urls.length} photos · Tap to manage',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 9,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
             ],
           ),
         ),
@@ -1625,7 +1594,7 @@ class _ProfileHeaderState extends State<_ProfileHeader> {
                               borderRadius: BorderRadius.circular(99),
                             ),
                             child: const Text(
-                              'Collapse stack',
+                              'Group Images',
                               style: TextStyle(
                                 color: Colors.white,
                                 fontSize: 10,
