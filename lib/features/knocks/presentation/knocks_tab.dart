@@ -4,9 +4,12 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../app/theme/app_theme.dart';
 import '../../../core/data/loverage_repository.dart';
+import '../../../core/data/new_activity_tracker.dart';
 import '../../authentication/domain/account_status.dart';
 import '../../verification/presentation/verification_pending_banner.dart';
 import '../../../app/router/app_router.dart';
+import '../../../core/presentation/loverage_image.dart';
+import '../../../core/utils/country_helper.dart';
 
 class KnocksTab extends ConsumerStatefulWidget {
   const KnocksTab({super.key});
@@ -21,8 +24,68 @@ class _KnocksTabState extends ConsumerState<KnocksTab>
   bool _isLoading = false;
   List<_Knock> _incoming = [];
   List<_Knock> _sent = [];
+  RealtimeChannel? _knocksIncomingChannel;
+  RealtimeChannel? _knocksSentChannel;
   LoverageRepository get _repository =>
       LoverageRepository(Supabase.instance.client);
+
+  void _subscribeToKnocksRealtime() {
+    final supabase = Supabase.instance.client;
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) return;
+
+    _unsubscribeFromKnocksRealtime();
+
+    _knocksIncomingChannel = supabase
+        .channel('knocks_tab_incoming_$userId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'knocks',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'receiver_id',
+            value: userId,
+          ),
+          callback: (payload) {
+            _loadKnocks();
+          },
+        )
+        .subscribe();
+
+    _knocksSentChannel = supabase
+        .channel('knocks_tab_sent_$userId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'knocks',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'sender_id',
+            value: userId,
+          ),
+          callback: (payload) {
+            _loadKnocks();
+          },
+        )
+        .subscribe();
+  }
+
+  void _unsubscribeFromKnocksRealtime() {
+    final supabase = Supabase.instance.client;
+    if (_knocksIncomingChannel != null) {
+      try {
+        supabase.removeChannel(_knocksIncomingChannel!);
+      } catch (_) {}
+      _knocksIncomingChannel = null;
+    }
+    if (_knocksSentChannel != null) {
+      try {
+        supabase.removeChannel(_knocksSentChannel!);
+      } catch (_) {}
+      _knocksSentChannel = null;
+    }
+  }
 
   Future<void> _loadKnocks() async {
     setState(() => _isLoading = true);
@@ -51,13 +114,19 @@ class _KnocksTabState extends ConsumerState<KnocksTab>
     super.initState();
     _tabCtrl = TabController(length: 2, vsync: this);
     _tabCtrl.addListener(() {
+      if (_tabCtrl.index == 0) NewActivityTracker.markKnocksSeen();
       if (mounted) setState(() {});
     });
     _loadKnocks();
+    _subscribeToKnocksRealtime();
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => NewActivityTracker.markKnocksSeen(),
+    );
   }
 
   @override
   void dispose() {
+    _unsubscribeFromKnocksRealtime();
     _tabCtrl.dispose();
     super.dispose();
   }
@@ -232,6 +301,16 @@ class _KnocksTabState extends ConsumerState<KnocksTab>
                                       fontSize: 12.5, // Sleeker font size
                                     ),
                                   ),
+                                  ValueListenableBuilder<NewActivityState>(
+                                    valueListenable: NewActivityTracker.value,
+                                    builder: (context, activity, _) =>
+                                        activity.hasNewKnocks
+                                        ? const Padding(
+                                            padding: EdgeInsets.only(left: 5),
+                                            child: _OrangeNewDot(),
+                                          )
+                                        : const SizedBox.shrink(),
+                                  ),
                                   const SizedBox(width: 6),
                                   Container(
                                     padding: const EdgeInsets.symmetric(
@@ -399,6 +478,23 @@ class _KnocksTabState extends ConsumerState<KnocksTab>
   }
 }
 
+class _OrangeNewDot extends StatelessWidget {
+  const _OrangeNewDot();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 8,
+      height: 8,
+      decoration: BoxDecoration(
+        color: const Color(0xFFFF8A00),
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: 1),
+      ),
+    );
+  }
+}
+
 _Knock _knockFromRow(Map<String, dynamic> row, String profileKey) {
   final profile = row[profileKey] as Map<String, dynamic>? ?? const {};
   final repo = LoverageRepository(Supabase.instance.client);
@@ -406,10 +502,8 @@ _Knock _knockFromRow(Map<String, dynamic> row, String profileKey) {
     id: row['id'].toString(),
     name: (profile['public_name'] as String?) ?? 'Loverage member',
     age: (profile['age'] as num?)?.toInt() ?? 0,
-    city:
-        (profile['public_city'] as String?) ??
-        (profile['public_country_code'] as String?) ??
-        'Nearby',
+    city: (profile['public_city'] as String?) ?? 'Nearby',
+    country: (profile['public_country_code'] as String?) ?? '',
     imageUrl: repo.photoUrl(profile),
     time: _timeAgo(DateTime.tryParse((row['created_at'] ?? '').toString())),
     isNew:
@@ -523,15 +617,6 @@ class _KnockGridCardState extends State<_KnockGridCard> {
     widget.onDecline(widget.knock);
   }
 
-  String _getCountryFlag(String city) {
-    final c = city.toLowerCase();
-    if (c.contains('abu dhabi') || c.contains('dubai')) return '🇦🇪';
-    if (c.contains('cairo')) return '🇪🇬';
-    if (c.contains('istanbul')) return '🇹🇷';
-    if (c.contains('london')) return '🇬🇧';
-    return '🏳️';
-  }
-
   @override
   Widget build(BuildContext context) {
     if (_isProcessed) return const SizedBox.shrink();
@@ -565,18 +650,7 @@ class _KnockGridCardState extends State<_KnockGridCard> {
           fit: StackFit.expand,
           children: [
             // Photo background occupying full bleed
-            Image.network(
-              k.imageUrl,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(
-                color: AppColors.cardCream,
-                child: const Icon(
-                  Icons.person,
-                  size: 48,
-                  color: AppColors.textMuted,
-                ),
-              ),
-            ),
+            LoverageImage(imageUrl: k.imageUrl, fit: BoxFit.cover),
 
             // Gradient vignette overlay for readability
             Positioned.fill(
@@ -596,23 +670,27 @@ class _KnockGridCardState extends State<_KnockGridCard> {
               ),
             ),
 
-            // Country Flag on top left corner
-            Positioned(
-              top: 10,
-              left: 10,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.4),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Colors.white.withOpacity(0.15)),
-                ),
-                child: Text(
-                  _getCountryFlag(k.city),
-                  style: const TextStyle(fontSize: 13),
+            if (CountryHelper.getFlagAsset(k.country) != null)
+              Positioned(
+                top: 10,
+                left: 10,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.4),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.white.withOpacity(0.15)),
+                  ),
+                  child: CountryFlagWidget(
+                    country: k.country,
+                    width: 22,
+                    height: 15,
+                  ),
                 ),
               ),
-            ),
 
             // Time indicator on top right corner
             Positioned(
@@ -825,7 +903,7 @@ class _KnockGridCardState extends State<_KnockGridCard> {
 }
 
 class _Knock {
-  final String id, name, city, imageUrl, time;
+  final String id, name, city, country, imageUrl, time;
   final int age;
   final bool isNew;
   const _Knock({
@@ -833,6 +911,7 @@ class _Knock {
     required this.name,
     required this.age,
     required this.city,
+    required this.country,
     required this.imageUrl,
     required this.time,
     required this.isNew,

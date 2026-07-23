@@ -555,6 +555,32 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
     );
   }
 
+  Widget _buildFramePhoto(String url) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Positioned.fill(
+          child: Padding(
+            padding: const EdgeInsets.all(5.0),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: LoverageImage(
+                imageUrl: url,
+                fit: BoxFit.cover,
+              ),
+            ),
+          ),
+        ),
+        Positioned.fill(
+          child: Image.asset(
+            'Assets/2to3frame.png',
+            fit: BoxFit.fill,
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildCollapsedStack(List<String> urls) {
     if (urls.isEmpty) return const SizedBox.shrink();
 
@@ -595,13 +621,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                             ),
                           ],
                         ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(24),
-                          child: LoverageImage(
-                            imageUrl: thirdUrl,
-                            fit: BoxFit.cover,
-                          ),
-                        ),
+                        child: _buildFramePhoto(thirdUrl),
                       ),
                     ),
                   ),
@@ -628,13 +648,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                             ),
                           ],
                         ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(24),
-                          child: LoverageImage(
-                            imageUrl: secondUrl,
-                            fit: BoxFit.cover,
-                          ),
-                        ),
+                        child: _buildFramePhoto(secondUrl),
                       ),
                     ),
                   ),
@@ -654,13 +668,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                     ),
                   ],
                 ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(24),
-                  child: LoverageImage(
-                    imageUrl: mainUrl,
-                    fit: BoxFit.cover,
-                  ),
-                ),
+                child: _buildFramePhoto(mainUrl),
               ),
             ),
 
@@ -774,9 +782,9 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                                   itemBuilder: (context, index) => GestureDetector(
                                     behavior: HitTestBehavior.opaque,
                                     onTap: () => _openPhotoViewer(index),
-                                    child: LoverageImage(
-                                      imageUrl: photoUrls[index],
-                                      fit: BoxFit.cover,
+                                    child: Padding(
+                                      padding: const EdgeInsets.fromLTRB(28, 64, 28, 28),
+                                      child: _buildFramePhoto(photoUrls[index]),
                                     ),
                                   ),
                                 ),
