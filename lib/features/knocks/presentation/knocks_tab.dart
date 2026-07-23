@@ -24,8 +24,7 @@ class _KnocksTabState extends ConsumerState<KnocksTab>
   bool _isLoading = false;
   List<_Knock> _incoming = [];
   List<_Knock> _sent = [];
-  RealtimeChannel? _knocksIncomingChannel;
-  RealtimeChannel? _knocksSentChannel;
+  RealtimeChannel? _knocksRealtimeChannel;
   LoverageRepository get _repository =>
       LoverageRepository(Supabase.instance.client);
 
@@ -36,36 +35,14 @@ class _KnocksTabState extends ConsumerState<KnocksTab>
 
     _unsubscribeFromKnocksRealtime();
 
-    _knocksIncomingChannel = supabase
-        .channel('knocks_tab_incoming_$userId')
+    _knocksRealtimeChannel = supabase
+        .channel('knocks-realtime-$userId')
         .onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
           table: 'knocks',
-          filter: PostgresChangeFilter(
-            type: PostgresChangeFilterType.eq,
-            column: 'receiver_id',
-            value: userId,
-          ),
           callback: (payload) {
-            _loadKnocks();
-          },
-        )
-        .subscribe();
-
-    _knocksSentChannel = supabase
-        .channel('knocks_tab_sent_$userId')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'knocks',
-          filter: PostgresChangeFilter(
-            type: PostgresChangeFilterType.eq,
-            column: 'sender_id',
-            value: userId,
-          ),
-          callback: (payload) {
-            _loadKnocks();
+            _loadKnocks(showSpinner: false);
           },
         )
         .subscribe();
@@ -73,22 +50,18 @@ class _KnocksTabState extends ConsumerState<KnocksTab>
 
   void _unsubscribeFromKnocksRealtime() {
     final supabase = Supabase.instance.client;
-    if (_knocksIncomingChannel != null) {
+    if (_knocksRealtimeChannel != null) {
       try {
-        supabase.removeChannel(_knocksIncomingChannel!);
+        supabase.removeChannel(_knocksRealtimeChannel!);
       } catch (_) {}
-      _knocksIncomingChannel = null;
-    }
-    if (_knocksSentChannel != null) {
-      try {
-        supabase.removeChannel(_knocksSentChannel!);
-      } catch (_) {}
-      _knocksSentChannel = null;
+      _knocksRealtimeChannel = null;
     }
   }
 
-  Future<void> _loadKnocks() async {
-    setState(() => _isLoading = true);
+  Future<void> _loadKnocks({bool showSpinner = true}) async {
+    if (showSpinner) {
+      setState(() => _isLoading = true);
+    }
     try {
       final incomingRows = await _repository.incomingKnocks();
       final sentRows = await _repository.sentKnocks();
