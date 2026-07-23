@@ -317,22 +317,70 @@ class AuthRepositoryImpl implements AuthRepositoryInterface {
       // Delete any existing photos first to avoid duplicates
       await _supabase.from('profile_photos').delete().eq('user_id', userId);
 
-      // Insert new mock photos based on the number of images selected in the wizard
       final List<Map<String, dynamic>> photosToInsert = [];
-      final defaultList = gender == 'Male'
-          ? defaultMaleUrls
-          : defaultFemaleUrls;
+      
+      // Upload actual selected images
+      if (images.isNotEmpty) {
+        for (int i = 0; i < images.length; i++) {
+          final path = images[i];
+          final file = File(path);
+          if (file.existsSync()) {
+            try {
+              final bytes = file.readAsBytesSync();
+              final fileExtension = path.split('.').last.toLowerCase();
+              final objectPath = '$userId/${DateTime.now().microsecondsSinceEpoch}_$i.$fileExtension';
+              
+              String contentType = 'image/jpeg';
+              if (fileExtension == 'png') {
+                contentType = 'image/png';
+              } else if (fileExtension == 'webp') {
+                contentType = 'image/webp';
+              } else if (fileExtension == 'gif') {
+                contentType = 'image/gif';
+              }
 
-      final int count = images.isEmpty
-          ? 2
-          : images.length; // Ensure at least 2 photos
-      for (int i = 0; i < count; i++) {
-        photosToInsert.add({
-          'user_id': userId,
-          'public_url': defaultList[i % defaultList.length],
-          'is_primary': i == 0,
-          'moderation_status': 'approved',
-        });
+              await _supabase.storage.from('profile_photos').uploadBinary(
+                objectPath,
+                bytes,
+                fileOptions: FileOptions(
+                  contentType: contentType,
+                  upsert: false,
+                ),
+              );
+              
+              final publicUrl = _supabase.storage.from('profile_photos').getPublicUrl(objectPath);
+              photosToInsert.add({
+                'user_id': userId,
+                'public_url': publicUrl,
+                'is_primary': i == 0,
+                'sort_order': i,
+                'moderation_status': 'pending', // Under review until approved
+              });
+            } catch (_) {}
+          }
+        }
+      }
+
+      // Fallback to mock photos if no images were successfully uploaded
+      if (photosToInsert.isEmpty) {
+        final List<Map<String, dynamic>> fallbackPhotos = [];
+        final defaultList = gender == 'Male'
+            ? defaultMaleUrls
+            : defaultFemaleUrls;
+
+        final int count = images.isEmpty
+            ? 2
+            : images.length; // Ensure at least 2 photos
+        for (int i = 0; i < count; i++) {
+          fallbackPhotos.add({
+            'user_id': userId,
+            'public_url': defaultList[i % defaultList.length],
+            'is_primary': i == 0,
+            'sort_order': i,
+            'moderation_status': 'pending',
+          });
+        }
+        photosToInsert.addAll(fallbackPhotos);
       }
 
       final List<dynamic> photosResult = await _supabase
@@ -457,5 +505,21 @@ class AuthRepositoryImpl implements AuthRepositoryInterface {
       age--;
     }
     return age;
+  }
+
+  @override
+  Future<void> deleteAccount() async {
+    final userId = currentUserId;
+    if (userId != null) {
+      try {
+        await _supabase.rpc('delete_my_account');
+      } catch (_) {
+        // Fallback: attempt direct deletion from public.profiles
+        try {
+          await _supabase.from('profiles').delete().eq('id', userId);
+        } catch (_) {}
+      }
+    }
+    await signOut();
   }
 }
